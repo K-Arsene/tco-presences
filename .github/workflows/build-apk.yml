@@ -1,0 +1,26 @@
+name: Compiler l'APK
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Compiler
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+      - name: Renommer
+        run: cp app/build/outputs/apk/debug/app-debug.apk TCO-Presences.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TCO-Presences-apk
+          path: TCO-Presences.apk
