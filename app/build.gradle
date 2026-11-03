@@ -10,14 +10,28 @@ android {
         applicationId 'bf.tco.presences'
         minSdk 24
         targetSdk 35
-        versionCode 1
-        versionName '1.0'
+        versionCode 2
+        versionName '1.1'
+    }
+
+    // Clé de signature permanente (fournie par la compilation GitHub, voir LISEZMOI.md).
+    // Toujours la même clé : les mises à jour s'installent par-dessus sans perdre les données.
+    def ks = System.getenv('TCO_KEYSTORE_FILE')
+    signingConfigs {
+        tco {
+            if (ks) {
+                storeFile file(ks)
+                storePassword System.getenv('TCO_KEYSTORE_PASSWORD')
+                keyAlias 'tco'
+                keyPassword System.getenv('TCO_KEYSTORE_PASSWORD')
+            }
+        }
     }
 
     buildTypes {
         release {
             minifyEnabled false
-            // Pour une version signée, déclarer ici votre signingConfig (voir LISEZMOI.md).
+            if (ks) signingConfig signingConfigs.tco
         }
     }
 

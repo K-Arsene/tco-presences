@@ -17,12 +17,26 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v5
+      - name: Préparer la clé de signature
+        shell: bash
+        env:
+          PW: ${{ secrets.TCO_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$PW" ]; then
+            echo "::error::Secret TCO_KEYSTORE_PASSWORD manquant : Settings > Secrets and variables > Actions > New repository secret (voir LISEZMOI.md)."
+            exit 1
+          fi
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in signing/tco.jks.enc -out "$RUNNER_TEMP/tco.jks" -pass env:PW \
+            || { echo "::error::Mot de passe TCO_KEYSTORE_PASSWORD incorrect."; exit 1; }
+          echo "TCO_KEYSTORE_FILE=$RUNNER_TEMP/tco.jks" >> "$GITHUB_ENV"
       - name: Compiler
         shell: bash
+        env:
+          TCO_KEYSTORE_PASSWORD: ${{ secrets.TCO_KEYSTORE_PASSWORD }}
         run: |
           chmod +x gradlew
           set +e
-          ./gradlew assembleDebug --no-daemon --console=plain 2>&1 | tee build.log
+          ./gradlew assembleRelease --no-daemon --console=plain 2>&1 | tee build.log
           code=${PIPESTATUS[0]}
           if [ "$code" -ne 0 ]; then
             grep -E "error:|e: |What went wrong|FAILURE|Could not|ERROR" -A4 build.log | head -60 | while IFS= read -r l; do echo "::error::${l}"; done
@@ -30,7 +44,7 @@ jobs:
           fi
           exit $code
       - name: Renommer
-        run: cp app/build/outputs/apk/debug/app-debug.apk TCO-Presences.apk
+        run: cp app/build/outputs/apk/release/app-release.apk TCO-Presences.apk
       - uses: actions/upload-artifact@v4
         with:
           name: TCO-Presences-apk

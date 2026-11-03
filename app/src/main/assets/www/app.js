@@ -53,7 +53,18 @@
   const services = () => DB.list('services').sort((a, b) => svcKey(a).localeCompare(svcKey(b)));
   const openService = () => services().filter((s) => !s.closed).pop() || null;
   const presence = (sid, mid) => DB.get('presences', `${sid}|${mid}`);
-  const eligible = (m, s) => (m.createdAt || '0000') <= s.date;
+  // Un membre n'est compté (présent ou absent) qu'à partir de sa date d'arrivée à l'église.
+  const arrival = (m) => m.dateArrivee || m.createdAt || '0000';
+  // Visible au pointage dès le jour de son arrivée…
+  const listable = (m, s) => arrival(m) <= s.date;
+  // …mais compté dans les statistiques à partir des cultes suivants. Le jour même ne compte que s'il a été pointé (présent ou excusé).
+  const eligible = (m, s) => {
+    const a = arrival(m);
+    if (a < s.date) return true;
+    if (a > s.date) return false;
+    const p = DB.get('presences', `${s.id}|${m.id}`);
+    return !!p && (p.status === 'P' || p.status === 'E');
+  };
   const countedClosed = () => services().filter((s) => s.closed && s.counted);
 
   function lastCountedStatus(m, beforeService) {
@@ -180,7 +191,7 @@
 
   function drawPointage() {
     const s = openService(); if (!s) return;
-    const members = activeMembers().filter((m) => eligible(m, s));
+    const members = activeMembers().filter((m) => listable(m, s));
     const st = (m) => { const p = presence(s.id, m.id); return p ? p.status : null; };
     const nP = members.filter((m) => st(m) === 'P').length;
     const nE = members.filter((m) => st(m) === 'E').length;
@@ -234,7 +245,7 @@
 
   async function closeService() {
     const s = openService(); if (!s) return;
-    const members = activeMembers().filter((m) => eligible(m, s));
+    const members = activeMembers().filter((m) => listable(m, s));
     const absents = [];
     const writes = [];
     for (const m of members) {
@@ -372,6 +383,7 @@
       ['Date de naissance', m.naissance ? esc(fmtDate(m.naissance, { day: 'numeric', month: 'long', year: 'numeric' })) : '—'],
       ['Situation familiale', esc(m.famille || '—')],
       ['Groupes', esc(m.groupes || '—')],
+      ["Arrivée à l'église", esc(fmtDate(arrival(m), { day: 'numeric', month: 'long', year: 'numeric' }))],
       ['Enregistré(e) le', esc(fmtDate(m.createdAt, { day: 'numeric', month: 'long', year: 'numeric' }))]
     ];
     $app.innerHTML = `
@@ -452,6 +464,8 @@
           </div>
         </fieldset>
         <fieldset><legend>Église et foi</legend>
+          <div class="field"><label for="f-arrivee">Date d'arrivée à l'église <span class="req">*</span></label><input id="f-arrivee" name="dateArrivee" type="date" value="${esc(editing ? arrival(m) : fromPointage ? openService().date : today())}" max="${today()}">
+            <span class="small muted" style="margin-top:4px">Présences et absences sont comptées à partir de cette date seulement.</span></div>
           <div class="field"><label for="f-prov">Église de provenance</label><input id="f-prov" name="provenance" type="text" placeholder="Nom de l'église, ville" value="${esc(m.provenance)}"></div>
           <div class="field"><span class="lbl">Baptisé(e) d'eau ? <span class="req">*</span></span>${seg('baptise', [['oui', 'Oui'], ['non', 'Non']], m.baptise)}</div>
           <div class="field" id="bapt-date" ${m.baptise === 'oui' ? '' : 'hidden'}><label for="f-dbapt">Date du baptême (si connue)</label><input id="f-dbapt" name="dateBapteme" type="date" value="${esc(m.dateBapteme)}"></div>
@@ -466,7 +480,7 @@
           <div class="field"><label for="f-famille">Situation familiale</label><select id="f-famille" name="famille">
             ${['', 'Célibataire', 'Marié(e)', 'Veuf / veuve', 'Divorcé(e)'].map((v) => `<option value="${v}" ${m.famille === v ? 'selected' : ''}>${v || '—'}</option>`).join('')}</select></div>
           <div class="field"><label for="f-statut">Statut</label><select id="f-statut" name="statut">
-            ${['Nouveau venu', 'Membre', 'Ouvrier'].map((v) => `<option ${m.statut === v ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+            ${['Nouveau venu', 'Membre', 'Nouveau converti'].concat(m.statut && !['Nouveau venu', 'Membre', 'Nouveau converti'].includes(m.statut) ? [m.statut] : []).map((v) => `<option ${m.statut === v ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
           <div class="field"><label for="f-groupes">Groupes</label><input id="f-groupes" name="groupes" type="text" placeholder="Ex. : chorale, jeunesse" value="${esc(m.groupes)}"></div>
         </fieldset>
         <div id="ferr" class="err" role="alert"></div>
@@ -500,9 +514,14 @@
       if (!fd.sexe) missing.push('le sexe');
       if (!fd.tel) missing.push('le téléphone');
       if (!fd.baptise) missing.push("le baptême d'eau");
+      if (!fd.dateArrivee) missing.push("la date d'arrivée");
       const errBox = document.getElementById('ferr');
       if (missing.length) { errBox.textContent = 'À compléter : ' + missing.join(', ') + '.'; errBox.scrollIntoView({ block: 'center' }); return; }
       if (fd.baptise !== 'oui') fd.dateBapteme = '';
+      if (fromPointage && !editing && fd.dateArrivee > openService().date) {
+        errBox.textContent = `La date d'arrivée ne peut pas être après la date du culte en cours (${fmtShort(openService().date)}).`;
+        errBox.scrollIntoView({ block: 'center' }); return;
+      }
       if (!editing && !ui.dupOk) {
         const telDigits = fd.tel.replace(/\D/g, '').slice(-8);
         const dup = DB.list('members').find((x) => norm(x.nom + x.prenoms) === norm(fd.nom + fd.prenoms) || (telDigits && (x.tel || '').replace(/\D/g, '').slice(-8) === telDigits));
@@ -514,6 +533,10 @@
       ui.dupOk = false;
       const rec = Object.assign({}, editing || { id: uid(), createdAt: openService() && fromPointage ? openService().date : today(), actif: true }, fd);
       await DB.put('members', rec);
+      // Rappels ouverts portant sur des cultes antérieurs à l'arrivée : sans objet
+      for (const a of openAlerts().filter((x) => x.memberId === rec.id && x.dates.some((d) => d < rec.dateArrivee))) {
+        await DB.put('alerts', Object.assign({}, a, { status: 'done', kind: 'Autre', note: "Annulé : cultes antérieurs à la date d'arrivée", doneAt: today() }));
+      }
       if (ui.formPhoto) await savePhoto(rec.id, ui.formPhoto);
       ui.formPhoto = null; ui.formFor = null;
       if (fromPointage && !editing) {
@@ -729,7 +752,7 @@
           <label class="btn ghost" style="margin:0">Restaurer une sauvegarde<input type="file" accept="application/json,.json" id="restore" hidden></label>
           <div id="rerr" class="err" role="alert"></div>
         </section>
-        <p class="small muted" style="text-align:center">TCO Présences · version 1.0</p>
+        <p class="small muted" style="text-align:center">TCO Présences · version 1.1</p>
       </div>`;
     document.getElementById('sform').addEventListener('submit', async (e) => {
       e.preventDefault();

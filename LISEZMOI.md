@@ -40,7 +40,8 @@ Configuration requise : Android 7.0 ou plus récent.
 Règles appliquées :
 - Seuls les cultes **comptés** entrent dans les bilans et la règle des 2 absences. Les cultes du dimanche sont comptés par défaut, et la case peut être changée à l'ouverture de chaque culte.
 - Une absence **excusée** ne compte pas comme absence et n'entre pas dans le calcul du taux.
-- Taux de participation = présences ÷ (cultes comptés depuis l'enregistrement du membre − absences excusées).
+- Un membre n'est compté qu'à partir de sa date d'arrivée à l'église. Le jour même ne compte que s'il a été pointé.
+- Taux de participation = présences ÷ (cultes comptés depuis son arrivée − absences excusées).
 
 ## Important : données et sauvegarde
 - Les données sont enregistrées **sur un seul téléphone**. Si deux responsables pointent sur deux téléphones différents, leurs listes ne se rejoignent pas. Pour la première version, il faut donc **un téléphone de pointage** pour le service d'accueil.
@@ -50,7 +51,13 @@ Règles appliquées :
 ## Version suivante (à prévoir)
 Le pointage à plusieurs téléphones en même temps demande un petit serveur de synchronisation (par exemple l'API Laravel décrite dans le dossier de conception). La structure des données est déjà prévue pour.
 
-## Version « release » signée (facultatif)
-L'APK *debug* s'installe et fonctionne normalement. Pour une diffusion plus large, ou plus tard sur le Play Store :
-1. Créer une clé de signature avec *Build › Generate Signed App Bundle / APK* dans Android Studio.
-2. Conserver la clé précieusement : sans elle, les mises à jour sont impossibles.
+## Signature de l'APK (à ne pas perdre)
+L'APK est signé avec une clé permanente. Elle est stockée chiffrée dans `signing/tco.jks.enc`, et son mot de passe se trouve dans le secret GitHub **TCO_KEYSTORE_PASSWORD** (*Settings › Secrets and variables › Actions*).
+Garder ce mot de passe en lieu sûr. Sans lui, les prochaines versions ne pourront plus s'installer par-dessus l'ancienne.
+
+## Historique
+- 1.1 :
+  - les statistiques comptent un membre à partir de sa **date d'arrivée à l'église** (nouveau champ de la fiche) ;
+  - le statut « Ouvrier » devient « Nouveau converti » ;
+  - l'APK est désormais signé avec une clé permanente.
+- 1.0 : première version.
