@@ -756,7 +756,7 @@
           <label class="btn ghost" style="margin:0">Restaurer une sauvegarde<input type="file" accept="application/json,.json" id="restore" hidden></label>
           <div id="rerr" class="err" role="alert"></div>
         </section>
-        <p class="small muted" style="text-align:center">TCO Présences · version 1.4</p>
+        <p class="small muted" style="text-align:center">TCO Présences · version 1.5</p>
       </div>`;
     document.getElementById('sform').addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -768,11 +768,16 @@
       const f = e.target.files[0]; if (!f) return;
       const fr = new FileReader();
       fr.onload = async () => {
+        const txt = String(fr.result || '').replace(/^\uFEFF/, '').trim();
+        if (/^Bilan de participation/.test(txt) || f.name.toLowerCase().endsWith('.csv')) {
+          document.getElementById('rerr').textContent = "Ce fichier est un bilan (export Excel), pas une sauvegarde. Choisissez le fichier « sauvegarde-tco-presences-….json » (dossier Téléchargements › TCO Presences).";
+          return;
+        }
         try {
-          const data = JSON.parse(fr.result);
+          const data = JSON.parse(txt);
           await DB.restore(data);
           toast('Sauvegarde restaurée'); go('#/pointage');
-        } catch (err) { document.getElementById('rerr').textContent = 'Restauration impossible : ' + err.message; }
+        } catch (err) { document.getElementById('rerr').textContent = err instanceof SyntaxError ? "Ce fichier n'est pas une sauvegarde TCO Présences. Choisissez le fichier « sauvegarde-tco-presences-….json »." : 'Restauration impossible : ' + err.message; }
       };
       fr.readAsText(f);
     });
