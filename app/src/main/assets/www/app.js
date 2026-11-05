@@ -33,6 +33,10 @@
     camera: '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>'
   };
 
+  // Logo : chandelier d'or à sept branches (proposition A)
+  const LOGO = '<svg class="logo" viewBox="0 0 200 200" aria-hidden="true"><g fill="none" stroke="#D9A93C" stroke-width="12" stroke-linecap="round"><path d="M78 76 A22 22 0 0 0 122 76"/><path d="M56 76 A44 44 0 0 0 144 76"/><path d="M34 76 A66 66 0 0 0 166 76"/><path d="M100 76 V160"/></g><path d="M70 178 H130 L115 160 H85 Z" fill="#D9A93C"/><g fill="#F6D27A"><path d="M34 40 C42 50 42 62 34 62 C26 62 26 50 34 40 Z"/><path d="M56 40 C64 50 64 62 56 62 C48 62 48 50 56 40 Z"/><path d="M78 40 C86 50 86 62 78 62 C70 62 70 50 78 40 Z"/><path d="M100 34 C109 46 109 62 100 62 C91 62 91 46 100 34 Z"/><path d="M122 40 C130 50 130 62 122 62 C114 62 114 50 122 40 Z"/><path d="M144 40 C152 50 152 62 144 62 C136 62 136 50 144 40 Z"/><path d="M166 40 C174 50 174 62 166 62 C158 62 158 50 166 40 Z"/></g></svg>';
+  const KICKER = `<div class="kicker brandline"><span class="logobox">${LOGO}</span>TCO · Service d'accueil</div>`;
+
   function toast(msg) {
     const t = document.getElementById('toast');
     t.textContent = msg; t.hidden = false;
@@ -168,7 +172,7 @@
     if (!s) return viewOuvrir();
     $app.innerHTML = `
       <header class="head">
-        <div class="row between"><div class="kicker">TCO · Service d'accueil</div>
+        <div class="row between">${KICKER}
           <a class="iconbtn noprint" href="#/reglages" aria-label="Réglages" style="color:#fff">${ICON.gear}</a></div>
         <h1>Pointage du culte</h1>
         <div class="sub">${esc(cap(fmtDate(s.date)))}${s.time ? ' · ' + esc(s.time.replace(':', ' h ')) : ''}</div>
@@ -283,7 +287,7 @@
     const isSunday = d.getDay() === 0;
     $app.innerHTML = `
       <header class="head">
-        <div class="row between"><div class="kicker">TCO · Service d'accueil</div>
+        <div class="row between">${KICKER}
           <a class="iconbtn" href="#/reglages" aria-label="Réglages" style="color:#fff">${ICON.gear}</a></div>
         <h1>Pointage du culte</h1>
         <div class="sub">Aucun culte ouvert</div>
@@ -340,7 +344,7 @@
     const n = activeMembers().length;
     $app.innerHTML = `
       <header class="head light">
-        <div class="kicker">TCO · Service d'accueil</div>
+        ${KICKER}
         <div class="row between"><h1>Membres</h1><a class="btn primary sm" href="#/nouveau">${ICON.plus}Nouveau</a></div>
         <div class="sub muted">${n} membre${n > 1 ? 's' : ''} actif${n > 1 ? 's' : ''}</div>
       </header>
@@ -570,7 +574,7 @@
     const list = ui.rTab === 'open' ? todo : done;
     $app.innerHTML = `
       <header class="head light">
-        <div class="kicker">TCO · Service d'accueil</div>
+        ${KICKER}
         <h1>Rappels d'absence</h1>
         <p class="sub muted" style="margin:0">Membres absents à 2 cultes comptés successifs.</p>
         <div class="tabs" role="group" aria-label="Choisir la liste" style="margin-top:10px">
@@ -683,7 +687,7 @@
     const table = b.rows.slice().sort((x, y) => norm(x.m.nom + x.m.prenoms).localeCompare(norm(y.m.nom + y.m.prenoms)));
     $app.innerHTML = `
       <header class="head light">
-        <div class="row between"><div class="kicker">TCO · Service d'accueil</div><a class="iconbtn noprint" href="#/reglages" aria-label="Réglages">${ICON.gear}</a></div>
+        <div class="row between">${KICKER}<a class="iconbtn noprint" href="#/reglages" aria-label="Réglages">${ICON.gear}</a></div>
         <h1>Bilans de participation</h1>
         <div class="tabs noprint" role="group" aria-label="Période du bilan" style="margin-top:8px">
           <button type="button" data-act="bmode" data-k="month" aria-pressed="${ui.bMode === 'month'}">Mensuel</button>
@@ -752,7 +756,7 @@
           <label class="btn ghost" style="margin:0">Restaurer une sauvegarde<input type="file" accept="application/json,.json" id="restore" hidden></label>
           <div id="rerr" class="err" role="alert"></div>
         </section>
-        <p class="small muted" style="text-align:center">TCO Présences · version 1.1</p>
+        <p class="small muted" style="text-align:center">TCO Présences · version 1.2</p>
       </div>`;
     document.getElementById('sform').addEventListener('submit', async (e) => {
       e.preventDefault();

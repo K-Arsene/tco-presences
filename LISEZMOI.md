@@ -56,6 +56,7 @@ L'APK est signé avec une clé permanente. Elle est stockée chiffrée dans `sig
 Garder ce mot de passe en lieu sûr. Sans lui, les prochaines versions ne pourront plus s'installer par-dessus l'ancienne.
 
 ## Historique
+- 1.2 : logo du chandelier d'or, à la fois comme icône de l'application et en haut des écrans.
 - 1.1 :
   - les statistiques comptent un membre à partir de sa **date d'arrivée à l'église** (nouveau champ de la fiche) ;
   - le statut « Ouvrier » devient « Nouveau converti » ;
