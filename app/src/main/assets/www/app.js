@@ -33,8 +33,8 @@
     camera: '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>'
   };
 
-  // Logo : chandelier d'or à sept branches (proposition A)
-  const LOGO = '<svg class="logo" viewBox="0 0 200 200" aria-hidden="true"><g fill="none" stroke="#D9A93C" stroke-width="12" stroke-linecap="round"><path d="M78 76 A22 22 0 0 0 122 76"/><path d="M56 76 A44 44 0 0 0 144 76"/><path d="M34 76 A66 66 0 0 0 166 76"/><path d="M100 76 V160"/></g><path d="M70 178 H130 L115 160 H85 Z" fill="#D9A93C"/><g fill="#F6D27A"><path d="M34 40 C42 50 42 62 34 62 C26 62 26 50 34 40 Z"/><path d="M56 40 C64 50 64 62 56 62 C48 62 48 50 56 40 Z"/><path d="M78 40 C86 50 86 62 78 62 C70 62 70 50 78 40 Z"/><path d="M100 34 C109 46 109 62 100 62 C91 62 91 46 100 34 Z"/><path d="M122 40 C130 50 130 62 122 62 C114 62 114 50 122 40 Z"/><path d="M144 40 C152 50 152 62 144 62 C136 62 136 50 144 40 Z"/><path d="M166 40 C174 50 174 62 166 62 C158 62 158 50 166 40 Z"/></g></svg>';
+  // Logo officiel du TCO (chandelier d'or)
+  const LOGO = '<img class="logo" src="logo.png" alt="">';
   const KICKER = `<div class="kicker brandline"><span class="logobox">${LOGO}</span>TCO · Service d'accueil</div>`;
 
   function toast(msg) {
@@ -756,7 +756,7 @@
           <label class="btn ghost" style="margin:0">Restaurer une sauvegarde<input type="file" accept="application/json,.json" id="restore" hidden></label>
           <div id="rerr" class="err" role="alert"></div>
         </section>
-        <p class="small muted" style="text-align:center">TCO Présences · version 1.2</p>
+        <p class="small muted" style="text-align:center">TCO Présences · version 1.3</p>
       </div>`;
     document.getElementById('sform').addEventListener('submit', async (e) => {
       e.preventDefault();

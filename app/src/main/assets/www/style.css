@@ -17,9 +17,8 @@ a{color:var(--brand)}
 .head.light{background:#fff;color:var(--ink);border-bottom:1px solid var(--line)}
 .kicker{font-size:13px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;opacity:.9}
 .brandline{display:flex;align-items:center;gap:10px;opacity:1}
-.logobox{width:40px;height:40px;flex:none;border-radius:10px;background:var(--brand);display:flex;align-items:center;justify-content:center}
-.head:not(.light) .logobox{background:rgba(255,255,255,.12)}
-.logo{width:32px;height:32px;display:block}
+.logobox{width:44px;height:44px;flex:none;border-radius:10px;background:#FFC488;display:flex;align-items:center;justify-content:center}
+.logo{width:38px;height:38px;display:block;object-fit:contain}
 .head h1{font-size:24px;font-weight:700}
 .head .sub{font-size:15px}
 .pills{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
