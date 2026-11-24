@@ -1,5 +1,6 @@
 /* TCO Présences — application du service d'accueil
-   Pointage des cultes, rappels après 2 absences successives, bilans mensuels et annuels. */
+   Pointage des cultes et rencontres, rappels après 2 absences successives sans excuse,
+   bilans mensuels, trimestriels et annuels, grand bilan (membres × rencontres). */
 (function () {
   'use strict';
   const $app = document.getElementById('app');
@@ -36,10 +37,25 @@
     return s.assemblee ? CULTES[s.assemblee] + (s.label ? ' · ' + s.label : '') : (s.label || TYPES[s.type] || 'Culte');
   };
   const timeRange = (s) => s.time ? (s.timeEnd ? `${s.time}–${s.timeEnd}` : s.time) : '';
-  // Le membre appartient-il à ce culte ? (culte commun = tout le monde)
-  const strictBelongs = (m, s) => svcA(s) === 'commun' || m.culte === svcA(s);
+  // Culte d'appartenance à une date donnée : un transfert daté ne réécrit pas l'historique.
+  const culteAt = (m, date) => {
+    const h = m.culteHistory;
+    if (!h || !h.length) return m.culte || '';
+    let c = h[0].culte;
+    for (const x of h) if (x.from <= date) c = x.culte;
+    return c;
+  };
+  // Le membre appartient-il à ce culte à cette date ? (culte commun = tout le monde)
+  const strictBelongs = (m, s) => svcA(s) === 'commun' || culteAt(m, s.date) === svcA(s);
   // Affiché au pointage : son culte, ou partout tant que son culte n'est pas précisé
-  const belongs = (m, s) => strictBelongs(m, s) || !m.culte;
+  const belongs = (m, s) => strictBelongs(m, s) || !culteAt(m, s.date);
+  // Périodes où le membre était parti (il n'est ni présent ni absent pendant ce temps)
+  const departs = (m) => m.departs || (m.partiLe ? [{ from: m.partiLe, to: null }] : []);
+  const away = (m, date) => departs(m).some((d) => date > d.from && (!d.to || date < d.to));
+  // Nombre saisi à la main (non enregistrés, enfants)
+  const num = (v) => Math.max(0, Math.floor(Number(v) || 0));
+  const extras = (s) => ({ v: num(s.visiteurs), e: num(s.enfants) });
+  const telHref = (t) => String(t || '').replace(/[^\d+]/g, '');
 
   const ICON = {
     check: '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"/></svg>',
@@ -69,8 +85,9 @@
   }
 
   /* ---------- Données dérivées ---------- */
-  const activeMembers = () => DB.list('members').filter((m) => m.actif !== false)
-    .sort((a, b) => norm(a.nom + ' ' + a.prenoms).localeCompare(norm(b.nom + ' ' + b.prenoms)));
+  const byName = (a, b) => norm(a.nom + ' ' + a.prenoms).localeCompare(norm(b.nom + ' ' + b.prenoms));
+  const allMembers = () => DB.list('members').sort(byName);
+  const activeMembers = () => allMembers().filter((m) => m.actif !== false);
   const svcKey = (s) => `${s.date}T${s.time || '00:00'}`;
   const services = () => DB.list('services').sort((a, b) => svcKey(a).localeCompare(svcKey(b)));
   const openService = () => services().filter((s) => !s.closed).pop() || null;
@@ -79,14 +96,15 @@
   const arrival = (m) => m.dateArrivee || m.createdAt || '0000';
   // Visible au pointage dès le jour de son arrivée…
   const listable = (m, s) => arrival(m) <= s.date && belongs(m, s);
-  // …mais compté dans les statistiques à partir des cultes suivants. Le jour même ne compte que s'il a été pointé (présent ou excusé).
-  // Un membre n'est compté que pour les cultes de son assemblée et les cultes communs.
+  // …mais compté dans les statistiques à partir des rencontres suivantes. Le jour même ne compte que s'il a été pointé (présent ou excusé).
+  // Un membre n'est compté que pour les cultes de son assemblée (à la date du culte) et les rencontres communes,
+  // et jamais pendant une période où il était parti.
   const eligible = (m, s) => {
     const a = arrival(m);
-    if (a > s.date) return false;
+    if (a > s.date || away(m, s.date)) return false;
     const p = DB.get('presences', `${s.id}|${m.id}`);
     const pointed = !!p && (p.status === 'P' || p.status === 'E');
-    if (!strictBelongs(m, s)) return !m.culte && pointed;
+    if (!strictBelongs(m, s)) return !culteAt(m, s.date) && pointed;
     if (a < s.date) return true;
     return pointed;
   };
@@ -101,6 +119,7 @@
     return p ? p.status : 'A';
   }
 
+  // Une absence excusée reste une absence dans les statistiques (elle est seulement signalée « excusée »).
   function memberStats(m, list) {
     let P = 0, A = 0, E = 0;
     for (const s of list) {
@@ -109,8 +128,8 @@
       const st = p ? p.status : 'A';
       if (st === 'P') P++; else if (st === 'E') E++; else A++;
     }
-    const denom = P + A;
-    return { P, A, E, denom, rate: denom ? P / denom : null };
+    const denom = P + A + E;
+    return { P, A, E, abs: A + E, denom, rate: denom ? P / denom : null };
   }
 
   const openAlerts = () => DB.list('alerts').filter((a) => a.status === 'open');
@@ -132,8 +151,10 @@
     a.download = name; document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   }
-  function printPage(title) {
-    if (NATIVE && NATIVE.printPage) NATIVE.printPage(title); else window.print();
+  function printPage(title, landscape) {
+    if (NATIVE && landscape && NATIVE.printPageLandscape) NATIVE.printPageLandscape(title);
+    else if (NATIVE && NATIVE.printPage) NATIVE.printPage(title);
+    else window.print();
   }
   const csvCell = (v) => { const s = String(v == null ? '' : v); return /[;"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
   const toCsv = (rows) => '﻿' + rows.map((r) => r.map(csvCell).join(';')).join('\r\n');
@@ -179,29 +200,44 @@
 
   function render() {
     const r = route();
-    const tab = { pointage: 'pointage', nouveau: 'pointage', reglages: 'pointage', rappels: 'rappels', membres: 'membres', membre: 'membres', modifier: 'membres', bilans: 'bilans', journees: 'pointage' }[r.name] || 'pointage';
+    const tab = { pointage: 'pointage', nouveau: 'pointage', reglages: 'pointage', rappels: 'rappels', membres: 'membres', membre: 'membres', modifier: 'membres', bilans: 'bilans', journees: 'pointage', rencontre: 'pointage', historique: 'pointage', grandbilan: 'bilans' }[r.name] || 'pointage';
     document.querySelectorAll('#tabbar a').forEach((a) => {
       if (a.dataset.tab === tab) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
     });
     updateBadge();
-    const views = { pointage: viewPointage, rappels: viewRappels, membres: viewMembres, membre: viewFiche, nouveau: viewForm, modifier: viewForm, bilans: viewBilans, reglages: viewReglages, journees: viewJournees };
+    const views = { pointage: viewPointage, rappels: viewRappels, membres: viewMembres, membre: viewFiche, nouveau: viewForm, modifier: viewForm, bilans: viewBilans, reglages: viewReglages, journees: viewJournees, rencontre: viewRencontre, historique: viewHistorique, grandbilan: viewGrandBilan };
     (views[r.name] || viewPointage)(r);
   }
 
   /* ================= POINTAGE ================= */
+  const counter = (field, label, hint, val) => `<div class="row between" style="gap:10px">
+      <label for="cnt-${field}" style="margin:0;color:var(--ink);font-size:15px;font-weight:700;flex:1">${label}${hint ? `<span class="small muted" style="display:block;font-weight:400">${hint}</span>` : ''}</label>
+      <div class="row" style="gap:6px">
+        <button type="button" class="btn ghost sm cntbtn" data-act="cnt" data-f="${field}" data-d="-1" aria-label="Retirer 1 : ${label}">−</button>
+        <input id="cnt-${field}" data-cnt="${field}" type="number" inputmode="numeric" min="0" value="${val}" class="cntin">
+        <button type="button" class="btn ghost sm cntbtn" data-act="cnt" data-f="${field}" data-d="1" aria-label="Ajouter 1 : ${label}">+</button>
+      </div></div>`;
+
   function viewPointage() {
     const s = openService();
     if (!s) return viewOuvrir();
+    const x = extras(s);
     $app.innerHTML = `
       <header class="head">
         <div class="row between">${KICKER}
           <a class="iconbtn noprint" href="#/reglages" aria-label="Réglages" style="color:#fff">${ICON.gear}</a></div>
-        <h1>${svcKind(s) === 'culte' ? 'Pointage du culte' : 'Pointage'}</h1>
+        <div class="row between" style="align-items:flex-end"><h1>${svcKind(s) === 'culte' ? 'Pointage du culte' : 'Pointage'}</h1>
+          <a href="#/rencontre/${s.id}" style="color:#fff;font-weight:700;font-size:15px;padding:10px 0 10px 12px">Modifier</a></div>
         <div class="sub">${esc(cap(fmtDate(s.date)))}${s.time ? ' · ' + esc(timeRange(s)) : ''}</div>
         <div class="sub small">${esc(svcName(s))}${svcA(s) === 'commun' ? ' · tous les membres' : ''}${svcKind(s) === 'culte' && !s.counted ? ' · non compté dans les bilans' : ''}</div>
         <div class="pills" id="pcounts"></div>
       </header>
       <div class="wrap" style="padding-bottom:4px">
+        <section class="card" style="display:flex;flex-direction:column;gap:10px;padding:12px 14px">
+          ${counter('visiteurs', 'Membres non enregistrés', 'Visiteurs, première visite, de passage', x.v)}
+          ${counter('enfants', 'Enfants', '', x.e)}
+          <p class="small muted" style="margin:0">Ces nombres s’ajoutent au total des présents, sans compter dans les présences des membres.</p>
+        </section>
         <div class="row between">
           <label for="q" style="margin:0">Rechercher un membre</label>
           <a class="btn soft sm" href="#/nouveau?from=pointage">${ICON.plus}Nouveau membre</a>
@@ -215,6 +251,14 @@
     drawPointage();
   }
 
+  async function saveCount(field, value) {
+    const s = openService(); if (!s) return;
+    await DB.put('services', Object.assign({}, s, { [field]: num(value) }));
+    const inp = document.getElementById('cnt-' + field);
+    if (inp && Number(inp.value) !== num(value)) inp.value = num(value);
+    drawPointage();
+  }
+
   function drawPointage() {
     const s = openService(); if (!s) return;
     const members = activeMembers().filter((m) => listable(m, s));
@@ -223,16 +267,17 @@
     const nE = members.filter((m) => st(m) === 'E').length;
     const nRest = members.length - nP - nE;
     const nAbs = members.filter((m) => !st(m) && strictBelongs(m, s)).length;
+    const x = extras(s);
     document.getElementById('pcounts').innerHTML =
-      `<span class="pill">${nP} présent${nP > 1 ? 's' : ''}</span><span class="pill outline">${nRest} non pointé${nRest > 1 ? 's' : ''}</span>${nE ? `<span class="pill outline">${nE} excusé${nE > 1 ? 's' : ''}</span>` : ''}`;
+      `<span class="pill">${nP} membre${nP > 1 ? 's' : ''} présent${nP > 1 ? 's' : ''}</span><span class="pill outline">${nRest} non pointé${nRest > 1 ? 's' : ''}</span>${nE ? `<span class="pill outline">${nE} excusé${nE > 1 ? 's' : ''}</span>` : ''}${x.v + x.e ? `<span class="pill">Total : ${nP + x.v + x.e}</span>` : ''}`;
     const filters = [['all', 'Tous'], ['out', 'Non pointés'], ['in', 'Présents'], ['exc', 'Excusés']];
     document.getElementById('pfilters').innerHTML = filters.map(([k, l]) =>
       `<button type="button" data-act="filter" data-k="${k}" aria-pressed="${ui.filter === k}">${l}</button>`).join('');
     const q = norm(ui.q);
     const shown = members.filter((m) => {
       if (q && !norm(fullName(m) + ' ' + m.nom + ' ' + (m.tel || '')).includes(q)) return false;
-      const x = st(m);
-      return ui.filter === 'all' || (ui.filter === 'in' && x === 'P') || (ui.filter === 'out' && !x) || (ui.filter === 'exc' && x === 'E');
+      const y = st(m);
+      return ui.filter === 'all' || (ui.filter === 'in' && y === 'P') || (ui.filter === 'out' && !y) || (ui.filter === 'exc' && y === 'E');
     });
     const list = document.getElementById('plist');
     if (!members.length) {
@@ -241,15 +286,16 @@
       list.innerHTML = '<li class="empty">Aucun membre ne correspond.</li>';
     } else {
       list.innerHTML = shown.map((m) => {
-        const x = st(m);
-        const prev = s.counted ? lastCountedStatus(m, s) : null;
-        const info = [svcA(s) === 'commun' && m.culte ? esc(CULTE_SHORT[m.culte]) : '', m.zone ? 'Zone ' + esc(m.zone) : '', !m.culte ? '<span class="tag grey">culte à préciser</span>' : '', prev === 'A' ? '<span class="tag warn">absent au culte précédent</span>' : ''].filter(Boolean).join(' · ');
-        const main = x === 'P'
+        const y = st(m);
+        const c = culteAt(m, s.date);
+        const prev = s.counted && svcKind(s) === 'culte' ? lastCountedStatus(m, s) : null;
+        const info = [svcA(s) === 'commun' && c ? esc(CULTE_SHORT[c]) : '', m.zone ? 'Zone ' + esc(m.zone) : '', !c ? '<span class="tag grey">culte à préciser</span>' : '', prev === 'A' ? '<span class="tag warn">absent au culte précédent</span>' : ''].filter(Boolean).join(' · ');
+        const main = y === 'P'
           ? `<button type="button" class="btn primary sm" data-act="mark" data-id="${m.id}" aria-pressed="true" aria-label="Retirer ${esc(fullName(m))} des présents">${ICON.check}Présent</button>`
-          : x === 'E'
+          : y === 'E'
             ? `<button type="button" class="btn sm" style="background:#E3E1DA" data-act="mark" data-id="${m.id}" aria-label="Pointer ${esc(fullName(m))} présent">Excusé</button>`
             : `<button type="button" class="btn ghost sm" data-act="mark" data-id="${m.id}" aria-pressed="false" aria-label="Pointer ${esc(fullName(m))} présent">Pointer</button>`;
-        const sec = x === 'E' ? 'Annuler l\'excuse' : 'Excuser';
+        const sec = y === 'E' ? 'Annuler l\'excuse' : 'Excuser';
         return `<li class="mrow">
           ${photoHtml(m, 72)}
           <a class="who" href="#/membre/${m.id}"><span class="name">${esc(fullName(m))}</span><span class="info">${info || '&nbsp;'}</span></a>
@@ -261,7 +307,7 @@
     foot.innerHTML = ui.closeArmed
       ? `<button type="button" class="btn ghost" style="flex:1" data-act="close-cancel">Annuler</button>
          <button type="button" class="btn dark" style="flex:2" data-act="close-confirm">Confirmer : ${nAbs} absent${nAbs > 1 ? 's' : ''}</button>`
-      : `<button type="button" class="btn dark block" data-act="close-arm">Clôturer le culte</button>`;
+      : `<button type="button" class="btn dark block" data-act="close-arm">Clôturer le pointage</button>`;
   }
 
   async function setStatus(sid, mid, status) {
@@ -273,40 +319,57 @@
   async function closeService() {
     const s = openService(); if (!s) return;
     const members = activeMembers().filter((m) => listable(m, s));
-    const absents = [];
     const writes = [];
     for (const m of members) {
-      const p = presence(s.id, m.id);
       if (!strictBelongs(m, s)) continue; // culte à préciser : jamais compté absent ailleurs que chez lui
-      if (!p) writes.push({ id: `${s.id}|${m.id}`, serviceId: s.id, memberId: m.id, status: 'A', at: new Date().toISOString() });
-      if (!p || p.status === 'A') absents.push(m);
+      if (!presence(s.id, m.id)) writes.push({ id: `${s.id}|${m.id}`, serviceId: s.id, memberId: m.id, status: 'A', at: new Date().toISOString() });
     }
     if (writes.length) await DB.putMany('presences', writes);
-    let newAlerts = 0;
-    if (s.counted && svcKind(s) === 'culte') {
-      const open = new Set(openAlerts().map((a) => a.memberId));
-      const prevServices = countedClosed().filter((x) => svcKey(x) < svcKey(s));
-      for (const m of absents) {
-        if (open.has(m.id)) continue;
-        if (DB.list('alerts').some((a) => a.memberId === m.id && a.serviceIds.includes(s.id))) continue;
-        const prev = prevServices.filter((x) => eligible(m, x)).pop();
-        if (!prev) continue;
-        const pp = presence(prev.id, m.id);
-        if (!pp || pp.status === 'A') {
-          await DB.put('alerts', { id: uid(), memberId: m.id, serviceIds: [prev.id, s.id], dates: [prev.date, s.date], createdAt: today(), status: 'open' });
-          newAlerts++;
-        }
-      }
-    }
     await DB.put('services', Object.assign({}, s, { closed: true, closedAt: new Date().toISOString() }));
+    const newAlerts = await refreshAlerts();
+    const st = (m) => (presence(s.id, m.id) || {}).status;
+    const x = extras(s);
     ui.closeArmed = false; ui.q = ''; ui.filter = 'all';
-    ui.lastClose = { serviceId: s.id, absents: absents.length, presents: members.filter((m) => (presence(s.id, m.id) || {}).status === 'P').length, alerts: newAlerts, culte: svcKind(s) === 'culte' };
+    ui.lastClose = { serviceId: s.id, presents: members.filter((m) => st(m) === 'P').length, absents: members.filter((m) => st(m) === 'A').length,
+      excuses: members.filter((m) => st(m) === 'E').length, v: x.v, e: x.e, alerts: newAlerts, culte: svcKind(s) === 'culte' };
     render();
+  }
+
+  /* ---------- Rappels : 2 absences successives SANS excuse aux cultes comptés ---------- */
+  // Recalculé à chaque clôture, correction, modification ou suppression d'une rencontre :
+  // les rappels devenus sans objet sont clos, et une série manquée (saisie de cultes passés) est détectée.
+  async function refreshAlerts() {
+    let created = 0;
+    for (const a of openAlerts()) {
+      if (!a.serviceIds || !a.serviceIds.length) continue;
+      const m = DB.get('members', a.memberId);
+      let note = '';
+      if (!m || m.actif === false) note = 'Membre marqué comme parti';
+      else if (a.serviceIds.some((id) => !DB.get('services', id))) note = 'Annulé : rencontre supprimée';
+      else if (a.serviceIds.some((id) => { const sv = DB.get('services', id); return !(sv.counted && svcKind(sv) === 'culte') || !eligible(m, sv); })) note = 'Annulé : culte non compté pour ce membre';
+      else if (a.serviceIds.some((id) => { const p = presence(id, a.memberId); return p && (p.status === 'P' || p.status === 'E'); })) note = 'Annulé : absence corrigée';
+      if (note) await DB.put('alerts', Object.assign({}, a, { status: 'done', kind: 'Autre', note, doneAt: today() }));
+    }
+    const counted = countedClosed();
+    const open = new Set(openAlerts().map((a) => a.memberId));
+    const all = DB.list('alerts');
+    for (const m of activeMembers()) {
+      if (open.has(m.id)) continue;
+      const mine = counted.filter((s) => eligible(m, s));
+      if (mine.length < 2) continue;
+      const [x, y] = mine.slice(-2);
+      const st = (s) => (presence(s.id, m.id) || { status: 'A' }).status;
+      if (st(x) !== 'A' || st(y) !== 'A') continue;
+      if (all.some((a) => a.memberId === m.id && ((a.serviceIds || []).some((id) => id === x.id || id === y.id) || (a.dates || []).includes(y.date)))) continue;
+      await DB.put('alerts', { id: uid(), memberId: m.id, serviceIds: [x.id, y.id], dates: [x.date, y.date], createdAt: today(), status: 'open' });
+      created++;
+    }
+    return created;
   }
 
   function viewOuvrir() {
     const lc = ui.lastClose;
-    const recent = services().filter((s) => s.closed).slice(-6).reverse();
+    const recent = services().filter((s) => s.closed).slice(-8).reverse();
     const d = new Date();
     const dow = d.getDay();
     // Mercredi soir : enseignement · vendredi soir : prière · sinon culte
@@ -323,7 +386,7 @@
         <div class="sub">Aucune rencontre ouverte</div>
       </header>
       <div class="wrap">
-        ${lc ? `<div class="banner warn" role="status"><strong>Pointage clôturé.</strong> ${lc.presents} présent${lc.presents > 1 ? 's' : ''}, ${lc.absents} absent${lc.absents > 1 ? 's' : ''}.
+        ${lc ? `<div class="banner warn" role="status"><strong>Pointage clôturé.</strong> ${lc.presents} membre${lc.presents > 1 ? 's' : ''} présent${lc.presents > 1 ? 's' : ''}, ${lc.absents} absent${lc.absents > 1 ? 's' : ''}${lc.excuses ? `, ${lc.excuses} excusé${lc.excuses > 1 ? 's' : ''}` : ''}.${lc.v + lc.e ? ` Total des présents : <strong>${lc.presents + lc.v + lc.e}</strong> (dont ${lc.v} non enregistré${lc.v > 1 ? 's' : ''} et ${lc.e} enfant${lc.e > 1 ? 's' : ''}).` : ''}
           ${lc.alerts ? ` ${lc.alerts} rappel${lc.alerts > 1 ? 's' : ''} créé${lc.alerts > 1 ? 's' : ''} (2 absences successives). <a href="#/rappels"><strong>Voir les rappels</strong></a>` : lc.culte ? ' Aucun nouveau rappel.' : ''}</div>` : ''}
         ${upcoming.length ? `<section class="card" style="display:flex;flex-direction:column;gap:8px"><h2>Journées spéciales</h2>
           ${upcoming.map((ev) => {
@@ -362,14 +425,11 @@
         </form>
         <a class="btn ghost block" href="#/journees">${ICON.plus}Programmer des journées spéciales</a>
         ${recent.length ? `<section class="card"><h2 style="margin-bottom:8px">Dernières rencontres</h2>
-          ${recent.map((s) => {
-            const pr = DB.list('presences').filter((p) => p.serviceId === s.id);
-            const nP = pr.filter((p) => p.status === 'P').length;
-            return `<div class="row between" style="padding:8px 0;border-top:1px solid #EFEDE7">
-              <div><div style="font-weight:700">${esc(cap(fmtDate(s.date, { weekday: 'short', day: 'numeric', month: 'short' })))}${s.time ? ' · ' + esc(timeRange(s)) : ''}</div>
-              <div class="small muted">${esc(svcName(s))} · ${nP} présent${nP > 1 ? 's' : ''}${svcKind(s) === 'culte' && !s.counted ? ' · non compté' : ''}</div></div>
-              <button type="button" class="btn ghost sm" data-act="reopen" data-id="${s.id}">Corriger</button></div>`;
-          }).join('')}</section>` : ''}
+          ${recent.map((s) => `<div class="row between" style="padding:8px 0;border-top:1px solid #EFEDE7;gap:10px">
+              <div style="min-width:0"><div style="font-weight:700">${esc(cap(fmtDate(s.date, { weekday: 'short', day: 'numeric', month: 'short' })))}${s.time ? ' · ' + esc(timeRange(s)) : ''}</div>
+              <div class="small muted">${esc(svcName(s))} · ${serviceLine(s)}${svcKind(s) === 'culte' && !s.counted ? ' · non compté' : ''}</div></div>
+              <a class="btn ghost sm" href="#/rencontre/${s.id}">Modifier</a></div>`).join('')}
+          <a class="btn soft sm block" href="#/historique" style="margin-top:8px">Toutes les rencontres</a></section>` : ''}
       </div>`;
     const kindBtns = document.querySelectorAll('#skind button');
     const typeBtns = document.querySelectorAll('#stype button');
@@ -415,58 +475,70 @@
 
   function viewJournees() {
     const list = events().slice().reverse();
+    const editEv = ui.evEdit ? events().find((x) => x.id === ui.evEdit) : null;
+    const ev0 = editEv || { name: '', type: 'priere', start: today(), end: today(), days: [] };
+    const d0 = ev0.days[0] || { start: '18:00', end: '21:00' };
     $app.innerHTML = `
       <div class="bar"><a class="iconbtn" href="#/pointage" aria-label="Retour">${ICON.back}</a><h1>Journées spéciales</h1></div>
       <div class="wrap">
         <form class="card" id="evForm" style="display:flex;flex-direction:column;gap:12px" novalidate>
-          <h2>Programmer des journées</h2>
+          <h2>${editEv ? 'Modifier les journées' : 'Programmer des journées'}</h2>
           <p class="small muted" style="margin:0">Ex. : 3 jours d’enseignement ou de prière de la JAD. Les membres des deux cultes sont réunis.</p>
-          <div class="field"><label for="ev-name">Nom de l’activité <span class="req">*</span></label><input id="ev-name" type="text" placeholder="Ex. : 3 jours de prière de la JAD"></div>
+          <div class="field"><label for="ev-name">Nom de l’activité <span class="req">*</span></label><input id="ev-name" type="text" placeholder="Ex. : 3 jours de prière de la JAD" value="${esc(ev0.name)}"></div>
           <div class="field"><span class="lbl">Type</span><div class="seg" role="group" aria-label="Type d’activité" id="ev-type">
-            <button type="button" data-t="enseignement" aria-pressed="false">Enseignement</button>
-            <button type="button" data-t="priere" aria-pressed="true">Prière</button>
-            <button type="button" data-t="autre" aria-pressed="false">Autre</button></div></div>
+            ${Object.entries(EV_TYPES).map(([k, l]) => `<button type="button" data-t="${k}" aria-pressed="${ev0.type === k}">${l}</button>`).join('')}</div></div>
           <div class="grid2">
-            <div class="field"><label for="ev-start">Date de début <span class="req">*</span></label><input id="ev-start" type="date" value="${today()}"></div>
-            <div class="field"><label for="ev-end">Date de fin <span class="req">*</span></label><input id="ev-end" type="date" value="${today()}"></div>
+            <div class="field"><label for="ev-start">Date de début <span class="req">*</span></label><input id="ev-start" type="date" value="${esc(ev0.start)}"></div>
+            <div class="field"><label for="ev-end">Date de fin <span class="req">*</span></label><input id="ev-end" type="date" value="${esc(ev0.end)}"></div>
           </div>
           <div class="grid2">
-            <div class="field"><label for="ev-h1">Heure de début</label><input id="ev-h1" type="time" value="18:00"></div>
-            <div class="field"><label for="ev-h2">Heure de fin</label><input id="ev-h2" type="time" value="21:00"></div>
+            <div class="field"><label for="ev-h1">Heure de début</label><input id="ev-h1" type="time" value="${esc(d0.start)}"></div>
+            <div class="field"><label for="ev-h2">Heure de fin</label><input id="ev-h2" type="time" value="${esc(d0.end)}"></div>
           </div>
           <span class="small muted">Ces heures s’appliquent à tous les jours. Vous pouvez ensuite les changer jour par jour ci-dessous.</span>
           <div id="ev-days" style="display:flex;flex-direction:column;gap:8px"></div>
           <div id="ev-err" class="err" role="alert"></div>
-          <button class="btn primary block" type="submit">Enregistrer les journées</button>
+          <button class="btn primary block" type="submit">${editEv ? 'Enregistrer les modifications' : 'Enregistrer les journées'}</button>
+          ${editEv ? '<button type="button" class="btn ghost block" data-act="ev-cancel">Annuler la modification</button>' : ''}
         </form>
         ${list.length ? `<section class="card" style="display:flex;flex-direction:column;gap:6px"><h2 style="margin-bottom:4px">Journées programmées</h2>
           ${list.map((ev) => `<div style="padding:10px 0;border-top:1px solid #EFEDE7;display:flex;flex-direction:column;gap:6px">
             <div class="row between"><div><div style="font-weight:700">${esc(ev.name)}</div><div class="small muted">${esc(EV_TYPES[ev.type] || '')} · ${ev.days.length} jour${ev.days.length > 1 ? 's' : ''}</div></div>
-            ${ev.days.some((x) => dayService(ev, x.date)) ? '' : `<button type="button" class="linkbtn" data-act="ev-del" data-ev="${ev.id}">Supprimer</button>`}</div>
+            <div class="row" style="gap:12px"><button type="button" class="linkbtn" data-act="ev-edit" data-ev="${ev.id}">Modifier</button>
+            ${ev.days.some((x) => dayService(ev, x.date)) ? '' : `<button type="button" class="linkbtn" data-act="ev-del" data-ev="${ev.id}">Supprimer</button>`}</div></div>
             ${ev.days.map((x, i) => {
               const sv = dayService(ev, x.date);
-              const nP = sv ? DB.list('presences').filter((p) => p.serviceId === sv.id && p.status === 'P').length : 0;
+              const nP = sv ? membersPresent(sv) : 0;
               return `<div class="row between small" style="gap:8px"><span>Jour ${i + 1} · ${esc(cap(fmtDate(x.date, { weekday: 'short', day: 'numeric', month: 'short' })))} · ${esc(x.start)}–${esc(x.end)}</span>
                 ${sv ? `<span class="tag ${sv.closed ? 'ok' : 'warn'}">${sv.closed ? nP + ' présent' + (nP > 1 ? 's' : '') : 'en cours'}</span>`
                      : `<button type="button" class="btn ghost sm" data-act="open-day" data-ev="${ev.id}" data-date="${x.date}">Pointer</button>`}</div>`;
             }).join('')}</div>`).join('')}</section>` : ''}
       </div>`;
     const form = document.getElementById('evForm');
-    let evType = 'priere';
+    let evType = ev0.type;
     const typeBtns = form.querySelectorAll('#ev-type button');
     typeBtns.forEach((b) => b.addEventListener('click', () => { evType = b.dataset.t; typeBtns.forEach((x) => x.setAttribute('aria-pressed', x === b)); }));
-    const drawDays = () => {
+    // Heures connues par jour : celles de la journée modifiée, puis ce que l'utilisateur a saisi
+    let known = new Map(ev0.days.map((d) => [d.date, { start: d.start, end: d.end }]));
+    const drawDays = (resetTimes) => {
+      form.querySelectorAll('#ev-days .day').forEach((el) => known.set(el.dataset.date, { start: el.querySelector('.d1').value, end: el.querySelector('.d2').value }));
+      if (resetTimes) known = new Map();
       const a = form.querySelector('#ev-start').value, z = form.querySelector('#ev-end').value;
       const h1 = form.querySelector('#ev-h1').value, h2 = form.querySelector('#ev-h2').value;
       const box = form.querySelector('#ev-days');
       if (!a || !z || z < a) { box.innerHTML = ''; return; }
-      box.innerHTML = datesBetween(a, z).map((dt, i) => `<div class="day" data-date="${dt}" style="background:#F6F5F1;border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;gap:6px">
-        <div style="font-weight:700;font-size:15px">Jour ${i + 1} · ${esc(cap(fmtDate(dt, { weekday: 'long', day: 'numeric', month: 'long' })))}</div>
-        <div class="grid2"><div class="field"><label for="d1-${dt}">Début</label><input id="d1-${dt}" class="d1" type="time" value="${h1}"></div>
-        <div class="field"><label for="d2-${dt}">Fin</label><input id="d2-${dt}" class="d2" type="time" value="${h2}"></div></div></div>`).join('');
+      box.innerHTML = datesBetween(a, z).map((dt, i) => {
+        const k = known.get(dt) || { start: h1, end: h2 };
+        const locked = editEv && dayService(editEv, dt);
+        return `<div class="day" data-date="${dt}" style="background:#F6F5F1;border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;gap:6px">
+        <div style="font-weight:700;font-size:15px">Jour ${i + 1} · ${esc(cap(fmtDate(dt, { weekday: 'long', day: 'numeric', month: 'long' })))}${locked ? ' <span class="tag ok">déjà pointé</span>' : ''}</div>
+        <div class="grid2"><div class="field"><label for="d1-${dt}">Début</label><input id="d1-${dt}" class="d1" type="time" value="${esc(k.start)}"></div>
+        <div class="field"><label for="d2-${dt}">Fin</label><input id="d2-${dt}" class="d2" type="time" value="${esc(k.end)}"></div></div></div>`;
+      }).join('');
     };
-    ['#ev-start', '#ev-end', '#ev-h1', '#ev-h2'].forEach((sel) => form.querySelector(sel).addEventListener('change', drawDays));
-    drawDays();
+    ['#ev-start', '#ev-end'].forEach((sel) => form.querySelector(sel).addEventListener('change', () => drawDays(false)));
+    ['#ev-h1', '#ev-h2'].forEach((sel) => form.querySelector(sel).addEventListener('change', () => drawDays(true)));
+    drawDays(false);
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       const err = form.querySelector('#ev-err');
@@ -477,8 +549,24 @@
       if (datesBetween(a, z).length > 30) { err.textContent = '30 jours au maximum.'; return; }
       const days = [...form.querySelectorAll('#ev-days .day')].map((el) => ({ date: el.dataset.date, start: el.querySelector('.d1').value, end: el.querySelector('.d2').value }));
       if (days.some((x) => !x.start || !x.end)) { err.textContent = 'Indiquez l’heure de début et de fin de chaque jour.'; return; }
-      await DB.setSetting('events', (DB.setting('events', []) || []).concat([{ id: uid(), name, type: evType, start: a, end: z, days }]));
-      toast('Journées enregistrées'); render(); window.scrollTo(0, 0);
+      const all = DB.setting('events', []) || [];
+      if (editEv) {
+        const lost = editEv.days.filter((d) => dayService(editEv, d.date) && !days.some((x) => x.date === d.date));
+        if (lost.length) { err.textContent = `Le ${fmtDate(lost[0].date, { weekday: 'long', day: 'numeric', month: 'long' })} a déjà été pointé : il ne peut pas être retiré.`; return; }
+        const upd = Object.assign({}, editEv, { name, type: evType, start: a, end: z, days });
+        await DB.setSetting('events', all.map((x) => (x.id === editEv.id ? upd : x)));
+        // Les journées déjà pointées prennent le nouveau nom et les nouvelles heures
+        for (const sv of services().filter((s) => s.eventId === editEv.id)) {
+          const i = days.findIndex((d) => d.date === sv.date);
+          if (i < 0) continue;
+          await DB.put('services', Object.assign({}, sv, { label: `${name} · jour ${i + 1}/${days.length}`, eventType: evType, time: days[i].start, timeEnd: days[i].end }));
+        }
+        ui.evEdit = null; toast('Journées modifiées');
+      } else {
+        await DB.setSetting('events', all.concat([{ id: uid(), name, type: evType, start: a, end: z, days }]));
+        toast('Journées enregistrées');
+      }
+      render(); window.scrollTo(0, 0);
     });
   }
 
@@ -490,6 +578,102 @@
       assemblee: 'commun', type: 'special', label: `${ev.name} · jour ${i + 1}/${ev.days.length}`, counted: false, closed: false });
     ui.lastClose = null; ui.q = ''; ui.filter = 'all';
     go('#/pointage');
+  }
+
+  /* ================= RENCONTRES : modifier, supprimer, historique ================= */
+  const membersPresent = (s) => DB.list('presences').filter((p) => p.serviceId === s.id && p.status === 'P').length;
+  function serviceLine(s) {
+    const nP = membersPresent(s); const x = extras(s);
+    return `${nP} membre${nP > 1 ? 's' : ''} présent${nP > 1 ? 's' : ''}${x.v + x.e ? ` · total ${nP + x.v + x.e}` : ''}`;
+  }
+
+  function viewHistorique() {
+    const list = services().slice().reverse();
+    let cur = '';
+    const rows = list.map((s) => {
+      const ym = s.date.slice(0, 7);
+      const head = ym !== cur ? `<h3 style="margin:14px 0 4px">${cap(MONTHS[Number(ym.slice(5)) - 1])} ${ym.slice(0, 4)}</h3>` : '';
+      cur = ym;
+      return head + `<a class="row between" href="#/rencontre/${s.id}" style="padding:10px 0;border-top:1px solid #EFEDE7;text-decoration:none;color:inherit;gap:10px">
+        <div style="min-width:0"><div style="font-weight:700">${esc(cap(fmtDate(s.date, { weekday: 'short', day: 'numeric', month: 'short' })))}${s.time ? ' · ' + esc(timeRange(s)) : ''}</div>
+        <div class="small muted">${esc(svcName(s))} · ${s.closed ? serviceLine(s) : 'pointage en cours'}${svcKind(s) === 'culte' && !s.counted ? ' · non compté' : ''}</div></div>
+        <span class="small" style="font-weight:700;color:var(--brand)">Modifier</span></a>`;
+    }).join('');
+    $app.innerHTML = `<div class="bar"><a class="iconbtn" href="#/pointage" aria-label="Retour">${ICON.back}</a><h1>Toutes les rencontres</h1></div>
+      <div class="wrap"><section class="card" style="padding-top:2px">${rows || '<div class="empty">Aucune rencontre pour le moment.</div>'}</section></div>`;
+  }
+
+  function viewRencontre(r) {
+    const s = DB.get('services', r.id);
+    if (!s) {
+      $app.innerHTML = `<div class="bar"><a class="iconbtn" href="#/historique" aria-label="Retour">${ICON.back}</a><h1>Rencontre</h1></div><div class="empty">Cette rencontre n'existe plus.</div>`;
+      return;
+    }
+    const k = svcKind(s); const isAct = k === 'activite'; const x = extras(s);
+    const nPr = DB.list('presences').filter((p) => p.serviceId === s.id).length;
+    $app.innerHTML = `
+      <div class="bar"><a class="iconbtn" href="${s.closed ? '#/historique' : '#/pointage'}" aria-label="Retour">${ICON.back}</a><h1>Modifier la rencontre</h1></div>
+      <div class="wrap">
+        <form id="rform" class="card" style="display:flex;flex-direction:column;gap:12px" novalidate>
+          <div class="small muted">${esc(cap(fmtDate(s.date)))} · ${esc(svcName(s))}</div>
+          ${isAct ? `<p class="small muted" style="margin:0">Journée spéciale : le nom, la date et les heures se modifient dans « Journées spéciales ».</p>`
+          : `<div class="field"><span class="lbl">Type de rencontre</span><div class="seg" role="group" aria-label="Type de rencontre" id="rkind">
+              ${[['culte', 'Culte'], ['enseignement', 'Enseignement'], ['priere', 'Prière']].map(([v, l]) => `<button type="button" data-k="${v}" aria-pressed="${k === v}">${l}</button>`).join('')}</div></div>
+            <div class="field" id="rculte" ${k === 'culte' ? '' : 'hidden'}><span class="lbl">Quel culte ?</span><div class="seg" role="group" aria-label="Quel culte" id="rtype">
+              ${[['fr', 'Français'], ['jm', 'Jula Moré'], ['commun', 'Commun']].map(([v, l]) => `<button type="button" data-t="${v}" aria-pressed="${svcA(s) === v}">${l}</button>`).join('')}</div></div>
+            <div class="field"><label for="rdate">Date</label><input id="rdate" type="date" value="${esc(s.date)}"></div>
+            <div class="grid2"><div class="field"><label for="rtime">Heure de début</label><input id="rtime" type="time" value="${esc(s.time || '')}"></div>
+              <div class="field"><label for="rend">Heure de fin</label><input id="rend" type="time" value="${esc(s.timeEnd || '')}"></div></div>
+            <div class="field"><label for="rlabel">Intitulé (facultatif)</label><input id="rlabel" type="text" value="${esc(s.label || '')}"></div>
+            <label class="row" id="rcountedrow" ${k === 'culte' ? '' : 'hidden'} style="color:var(--ink);font-size:15px;font-weight:600;margin:0;min-height:44px">
+              <input id="rcounted" type="checkbox" ${s.counted ? 'checked' : ''} style="width:22px;height:22px">Compter ce culte (bilans et règle des 2 absences)</label>`}
+          <div class="grid2">
+            <div class="field"><label for="rvis">Membres non enregistrés</label><input id="rvis" type="number" inputmode="numeric" min="0" value="${x.v}"></div>
+            <div class="field"><label for="renf">Enfants</label><input id="renf" type="number" inputmode="numeric" min="0" value="${x.e}"></div>
+          </div>
+          <div id="rerr2" class="err" role="alert"></div>
+          <button class="btn primary block" type="submit">Enregistrer</button>
+        </form>
+        <section class="card" style="display:flex;flex-direction:column;gap:10px">
+          <h3>Pointage</h3>
+          <p class="small muted" style="margin:0">${s.closed ? serviceLine(s) + ' · clôturé' : 'Pointage en cours'}</p>
+          ${s.closed ? `<button type="button" class="btn ghost block" data-act="reopen" data-id="${s.id}">Corriger le pointage</button>` : '<a class="btn ghost block" href="#/pointage">Revenir au pointage</a>'}
+        </section>
+        <section class="card">
+          ${ui.delArmed === s.id
+            ? `<p style="margin:0 0 10px">Supprimer définitivement cette rencontre et ses ${nPr} pointage${nPr > 1 ? 's' : ''} ? Les statistiques et les rappels seront recalculés sans elle.</p>
+               <div class="row"><button type="button" class="btn ghost sm" style="flex:1" data-act="sdel-cancel">Annuler</button>
+               <button type="button" class="btn danger sm" style="flex:1" data-act="sdel-confirm" data-id="${s.id}">Supprimer</button></div>`
+            : `<button type="button" class="btn danger sm block" data-act="sdel-arm" data-id="${s.id}">Supprimer cette rencontre</button>`}
+        </section>
+      </div>`;
+    let kind = k, asm = svcA(s);
+    if (!isAct) {
+      const kb = document.querySelectorAll('#rkind button'), tb = document.querySelectorAll('#rtype button');
+      const refresh = () => {
+        kb.forEach((b) => b.setAttribute('aria-pressed', b.dataset.k === kind));
+        tb.forEach((b) => b.setAttribute('aria-pressed', b.dataset.t === asm));
+        document.getElementById('rculte').hidden = kind !== 'culte';
+        document.getElementById('rcountedrow').hidden = kind !== 'culte';
+      };
+      kb.forEach((b) => b.addEventListener('click', () => { kind = b.dataset.k; refresh(); }));
+      tb.forEach((b) => b.addEventListener('click', () => { asm = b.dataset.t; refresh(); }));
+    }
+    document.getElementById('rform').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const upd = { visiteurs: num(document.getElementById('rvis').value), enfants: num(document.getElementById('renf').value) };
+      if (!isAct) {
+        const date = document.getElementById('rdate').value;
+        if (!date) { document.getElementById('rerr2').textContent = 'Indiquez la date.'; return; }
+        const isC = kind === 'culte';
+        Object.assign(upd, { date, time: document.getElementById('rtime').value, timeEnd: document.getElementById('rend').value, kind,
+          assemblee: isC ? asm : 'commun', type: isC ? (asm === 'commun' ? 'special' : 'dimanche') : 'semaine',
+          label: document.getElementById('rlabel').value.trim(), counted: isC ? document.getElementById('rcounted').checked : false });
+      }
+      await DB.put('services', Object.assign({}, DB.get('services', s.id), upd));
+      await refreshAlerts();
+      toast('Rencontre mise à jour'); go(s.closed ? '#/historique' : '#/pointage');
+    });
   }
 
   /* ================= MEMBRES ================= */
@@ -504,7 +688,7 @@
       <div class="wrap">
         <label for="mq" style="margin:0">Rechercher</label>
         <input id="mq" type="search" placeholder="Nom, prénom, téléphone, zone" value="${esc(ui.mq)}" autocomplete="off">
-        <div class="seg" role="group" aria-label="Filtrer par culte" id="mfilters"></div>
+        <div class="seg segwrap" role="group" aria-label="Filtrer par culte" id="mfilters"></div>
         <ul class="list" id="mlist"></ul>
       </div>`;
     document.getElementById('mq').addEventListener('input', (e) => { ui.mq = e.target.value; drawMembres(); });
@@ -513,17 +697,19 @@
   function drawMembres() {
     const q = norm(ui.mq);
     const all = activeMembers();
+    const gone = allMembers().filter((m) => m.actif === false);
     const f = ui.mCulte || 'all';
     const opts = [['all', `Tous (${all.length})`], ['fr', `Français (${all.filter((m) => m.culte === 'fr').length})`], ['jm', `Jula Moré (${all.filter((m) => m.culte === 'jm').length})`]];
     const nNone = all.filter((m) => !m.culte).length;
     if (nNone) opts.push(['none', `À préciser (${nNone})`]);
+    if (gone.length) opts.push(['gone', `Partis (${gone.length})`]);
     document.getElementById('mfilters').innerHTML = opts.map(([k, l]) => `<button type="button" data-act="mculte" data-k="${k}" aria-pressed="${f === k}" style="font-size:14px">${l}</button>`).join('');
-    const list = all.filter((m) => (f === 'all' || (f === 'none' ? !m.culte : m.culte === f)) && (!q || norm([m.nom, m.prenoms, m.tel, m.zone, m.quartier].join(' ')).includes(q)));
+    const list = (f === 'gone' ? gone : all).filter((m) => (f === 'all' || f === 'gone' || (f === 'none' ? !m.culte : m.culte === f)) && (!q || norm([m.nom, m.prenoms, m.tel, m.zone, m.quartier].join(' ')).includes(q)));
     document.getElementById('mlist').innerHTML = list.length ? list.map((m) => `
       <li><a class="mrow" href="#/membre/${m.id}" style="text-decoration:none;color:inherit">
         ${photoHtml(m, 56)}
         <span class="who"><span class="name">${esc(fullName(m))}</span>
-        <span class="info">${esc([m.culte ? CULTE_SHORT[m.culte] : 'Culte à préciser', m.statut, m.zone ? 'Zone ' + m.zone : ''].filter(Boolean).join(' · '))}</span></span>
+        <span class="info">${esc([m.actif === false ? 'Parti(e)' : '', m.culte ? CULTE_SHORT[m.culte] : 'Culte à préciser', m.statut, m.zone ? 'Zone ' + m.zone : ''].filter(Boolean).join(' · '))}</span></span>
       </a></li>`).join('') : `<li class="empty">${activeMembers().length ? 'Aucun membre ne correspond.' : 'Aucun membre enregistré pour le moment.'}</li>`;
   }
 
@@ -540,7 +726,8 @@
     const bapt = m.baptise === 'oui' ? `Oui${m.dateBapteme ? ' · ' + esc(fmtDate(m.dateBapteme, { day: 'numeric', month: 'long', year: 'numeric' })) : ''}` : m.baptise === 'non' ? 'Non' : '—';
     const rowsInfo = [
       ['Culte', m.culte ? esc(CULTES[m.culte]) : '<span class="low">À préciser</span>'],
-      ['Téléphone', m.tel ? `<a href="tel:${esc(m.tel)}">${esc(m.tel)}</a>` : '—'],
+      ...((m.culteHistory || []).length > 1 ? [['Transferts', m.culteHistory.slice(1).map((x, i) => `${esc(CULTE_SHORT[m.culteHistory[i].culte])} → ${esc(CULTE_SHORT[x.culte])} le ${esc(fmtDate(x.from, { day: 'numeric', month: 'short', year: 'numeric' }))}`).join('<br>')]] : []),
+      ['Téléphone', m.tel ? `<a href="tel:${esc(telHref(m.tel))}">${esc(m.tel)}</a>` : '—'],
       ['Sexe', esc(m.sexe || '—')],
       ['Quartier · zone', esc([m.quartier, m.zone ? 'Zone ' + m.zone : ''].filter(Boolean).join(' · ') || '—')],
       ['Église de provenance', esc(m.provenance || '—')],
@@ -561,6 +748,7 @@
             <input type="file" accept="image/*" capture="user" id="fphoto" hidden></label>
           <div class="small muted">${ph ? 'Photo mise à jour le ' + esc(fmtDate(ph.updatedAt, { day: 'numeric', month: 'short', year: 'numeric' })) : 'Pas encore de photo'}</div>
           <h2 style="font-size:24px">${esc(fullName(m))}</h2>
+          ${m.actif === false ? `<div class="banner warn" style="width:100%;box-sizing:border-box">Parti(e) le ${esc(fmtDate(departs(m).slice(-1)[0].from, { day: 'numeric', month: 'long', year: 'numeric' }))} : n’apparaît plus au pointage. Son historique reste dans les bilans.</div>` : ''}
           <div class="row" style="flex-wrap:wrap;justify-content:center">
             ${m.statut ? `<span class="tag dark">${esc(m.statut)}</span>` : ''}
             ${m.baptise === 'oui' ? `<span class="tag ok">Baptisé(e) d'eau</span>` : ''}
@@ -581,7 +769,7 @@
           <div style="padding:8px 0;border-top:1px solid #EFEDE7"><div style="font-weight:600">Absent les ${esc(a.dates.map(fmtShort).join(' et '))}</div>
           <div class="small muted">${a.status === 'done' ? `Traité : ${esc(a.kind)}${a.note ? ' — ' + esc(a.note) : ''}` : 'À traiter'}</div></div>`).join('')}</section>` : ''}
         <section class="card">
-          ${ui.leaveArmed === m.id
+          ${m.actif === false ? `<button type="button" class="btn primary sm block" data-act="reactivate" data-id="${m.id}">Réactiver ce membre (il revient)</button>` : ui.leaveArmed === m.id
             ? `<p style="margin:0 0 10px">Marquer ${esc(fullName(m))} comme parti(e) ? La fiche et l'historique sont conservés, mais la personne n'apparaît plus au pointage.</p>
                <div class="row"><button type="button" class="btn ghost sm" style="flex:1" data-act="leave-cancel">Annuler</button>
                <button type="button" class="btn danger sm" style="flex:1" data-act="leave-confirm" data-id="${m.id}">Confirmer</button></div>`
@@ -631,6 +819,8 @@
         </fieldset>
         <fieldset><legend>Église et foi</legend>
           <div class="field"><span class="lbl">Culte d'appartenance <span class="req">*</span></span>${seg('culte', [['fr', 'Culte en français'], ['jm', 'Culte Jula Moré']], m.culte || (!editing && fromPointage && svcA(openService()) !== 'commun' ? svcA(openService()) : ''))}</div>
+          ${editing && editing.culte ? `<div class="field" id="transfer" hidden><label for="f-transfert">Date du transfert</label><input id="f-transfert" name="dateTransfert" type="date" value="${today()}" max="${today()}">
+            <span class="small muted" style="margin-top:4px">Les rencontres d’avant cette date restent comptées dans l’ancien culte.</span></div>` : ''}
           <div class="field"><label for="f-arrivee">Date d'arrivée à l'église <span class="req">*</span></label><input id="f-arrivee" name="dateArrivee" type="date" value="${esc(editing ? arrival(m) : fromPointage ? openService().date : today())}" max="${today()}">
             <span class="small muted" style="margin-top:4px">Présences et absences sont comptées à partir de cette date seulement.</span></div>
           <div class="field"><label for="f-prov">Église de provenance</label><input id="f-prov" name="provenance" type="text" placeholder="Nom de l'église, ville" value="${esc(m.provenance)}"></div>
@@ -661,6 +851,7 @@
       g.querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', x === b));
       form.elements[g.dataset.seg].value = b.dataset.v;
       if (g.dataset.seg === 'baptise') document.getElementById('bapt-date').hidden = b.dataset.v !== 'oui';
+      if (g.dataset.seg === 'culte' && document.getElementById('transfer')) document.getElementById('transfer').hidden = b.dataset.v === editing.culte;
     }));
     form.querySelectorAll('[data-photo]').forEach((inp) => inp.addEventListener('change', async (e) => {
       const f = e.target.files[0]; if (!f) return;
@@ -690,6 +881,14 @@
         errBox.textContent = `La date d'arrivée ne peut pas être après la date du culte en cours (${fmtShort(openService().date)}).`;
         errBox.scrollIntoView({ block: 'center' }); return;
       }
+      const transferDate = fd.dateTransfert; delete fd.dateTransfert;
+      let hist = null;
+      if (editing && editing.culte && fd.culte !== editing.culte) {
+        const d = transferDate || today();
+        if (d < fd.dateArrivee) { errBox.textContent = "La date du transfert ne peut pas être avant la date d'arrivée."; errBox.scrollIntoView({ block: 'center' }); return; }
+        hist = (editing.culteHistory && editing.culteHistory.length ? editing.culteHistory.slice() : [{ culte: editing.culte, from: '0000-01-01' }]).filter((x) => x.from < d);
+        hist.push({ culte: fd.culte, from: d });
+      }
       if (!editing && !ui.dupOk) {
         const telDigits = fd.tel.replace(/\D/g, '').slice(-8);
         const dup = DB.list('members').find((x) => norm(x.nom + x.prenoms) === norm(fd.nom + fd.prenoms) || (telDigits && (x.tel || '').replace(/\D/g, '').slice(-8) === telDigits));
@@ -700,6 +899,7 @@
       }
       ui.dupOk = false;
       const rec = Object.assign({}, editing || { id: uid(), createdAt: openService() && fromPointage ? openService().date : today(), actif: true }, fd);
+      if (hist) rec.culteHistory = hist;
       await DB.put('members', rec);
       // Rappels ouverts portant sur des cultes antérieurs à l'arrivée : sans objet
       for (const a of openAlerts().filter((x) => x.memberId === rec.id && x.dates.some((d) => d < rec.dateArrivee))) {
@@ -707,6 +907,7 @@
       }
       if (ui.formPhoto) await savePhoto(rec.id, ui.formPhoto);
       ui.formPhoto = null; ui.formFor = null;
+      if (editing) await refreshAlerts();
       if (fromPointage && !editing) {
         await setStatus(openService().id, rec.id, 'P');
         toast(`${fullName(rec)} enregistré(e) et pointé(e) présent(e)`);
@@ -768,8 +969,8 @@
       </div>
       ${!open && a.note ? `<div class="small" style="background:#F6F5F1;border-radius:10px;padding:10px 12px">${esc(a.note)}</div>` : ''}
       ${open ? `<div class="grid3">
-          <a class="btn primary sm" href="tel:${esc(tel)}">${ICON.phone}Appeler</a>
-          <a class="btn ghost sm" href="sms:${esc(tel)}?body=${text}">${ICON.msg}SMS</a>
+          <a class="btn primary sm" href="tel:${esc(telHref(tel))}">${ICON.phone}Appeler</a>
+          <a class="btn ghost sm" href="sms:${esc(telHref(tel))}?body=${text}">${ICON.msg}SMS</a>
           <a class="btn ghost sm" href="https://wa.me/${waNumber(tel)}?text=${text}">WhatsApp</a>
         </div>
         ${editing ? `<form data-alert="${a.id}" style="border-top:1px solid var(--line);padding-top:12px;display:flex;flex-direction:column;gap:10px">
@@ -783,10 +984,23 @@
   }
 
   /* ================= BILANS ================= */
-  // Périodes : mensuel, trimestriel, annuel — filtrables par culte (tous, français, Jula Moré)
+  // Périodes : mensuel, trimestriel, annuel — par type de rencontre et par culte (tous, français, Jula Moré)
   const QNAMES = ['1er trimestre', '2e trimestre', '3e trimestre', '4e trimestre'];
   const QMONTHS = ['janv.–mars', 'avr.–juin', 'juil.–sept.', 'oct.–déc.'];
   const quarterOf = (ym) => `${ym.slice(0, 4)}-T${Math.floor((Number(ym.slice(5, 7)) - 1) / 3) + 1}`;
+  const fmtDM = (d) => `${Number(d.slice(8))}/${Number(d.slice(5, 7))}`;
+  const CODE = (s) => { const k = svcKind(s); return k === 'enseignement' ? 'ENS' : k === 'priere' ? 'PRI' : k === 'activite' ? 'JS' : svcA(s) === 'fr' ? 'FR' : svcA(s) === 'jm' ? 'JM' : 'COM'; };
+
+  function initBilanUi() {
+    const now = new Date();
+    const ym = `${now.getFullYear()}-${pad(now.getMonth() + 1)}`;
+    if (!ui.bMonth) ui.bMonth = ym;
+    if (!ui.bQuarter) ui.bQuarter = quarterOf(ym);
+    if (!ui.bYear) ui.bYear = String(now.getFullYear());
+    if (!ui.bCulte) ui.bCulte = 'all';
+    if (!ui.bKind) ui.bKind = 'culte';
+    return ym;
+  }
 
   function period() {
     if (ui.bMode === 'month') {
@@ -799,13 +1013,22 @@
     return { months: MONTHS.map((_, i) => `${ui.bYear}-${pad(i + 1)}`), key: ui.bYear, title: `Année ${ui.bYear}` };
   }
 
-  const bMembers = () => activeMembers().filter((m) => (ui.bCulte || 'all') === 'all' || m.culte === ui.bCulte);
-  const inCulte = (s) => (ui.bCulte || 'all') === 'all' || svcA(s) === 'commun' || svcA(s) === ui.bCulte;
+  // Membres concernés : tous (partis compris, pour leurs rencontres d'avant le départ), ou ceux qui ont fait partie du culte choisi
+  const everIn = (m, f) => m.culte === f || (m.culteHistory || []).some((x) => x.culte === f);
+  const bMembers = () => allMembers().filter((m) => ui.bCulte === 'all' || everIn(m, ui.bCulte));
+  const inCulte = (s) => ui.bCulte === 'all' || svcA(s) === 'commun' || svcA(s) === ui.bCulte;
+  // Rencontres communes : comptées dans le bilan d'un culte pour les membres qui en faisaient partie à cette date
+  const servicesFor = (m, list) => ui.bCulte === 'all' ? list : list.filter((s) => svcA(s) !== 'commun' || culteAt(m, s.date) === ui.bCulte);
 
   function periodServices(months) {
-    const k = ui.bKind || 'culte';
-    const base = k === 'culte' ? countedClosed().filter(inCulte) : services().filter((s) => s.closed && svcKind(s) === k);
+    const base = ui.bKind === 'culte' ? countedClosed().filter(inCulte) : services().filter((s) => s.closed && svcKind(s) === ui.bKind);
     return base.filter((s) => months.includes(s.date.slice(0, 7)));
+  }
+
+  function bilanSubtitle() {
+    return ui.bKind === 'culte'
+      ? (ui.bCulte === 'all' ? 'Tous les cultes' : CULTES[ui.bCulte] + ' (cultes communs inclus)')
+      : `${KINDS[ui.bKind]} · ${ui.bCulte === 'all' ? 'tous les membres' : 'membres du ' + CULTES[ui.bCulte].toLowerCase()}`;
   }
 
   function computeBilan() {
@@ -813,40 +1036,80 @@
     const list = periodServices(per.months);
     const members = bMembers();
     const ids = new Set(members.map((m) => m.id));
-    const rows = members.map((m) => ({ m, st: memberStats(m, list) })).filter((r) => r.st.P + r.st.A + r.st.E > 0);
+    const rows = members.map((m) => ({ m, st: memberStats(m, servicesFor(m, list)) })).filter((r) => r.st.denom > 0)
+      .sort((x, y) => byName(x.m, y.m));
     const sumP = rows.reduce((t, r) => t + r.st.P, 0);
     const sumD = rows.reduce((t, r) => t + r.st.denom, 0);
-    const perService = list.map((s) => ({ s, n: DB.list('presences').filter((p) => p.serviceId === s.id && p.status === 'P' && ids.has(p.memberId)).length }));
+    const presentBy = new Map();
+    for (const p of DB.list('presences')) if (p.status === 'P') { if (!presentBy.has(p.serviceId)) presentBy.set(p.serviceId, []); presentBy.get(p.serviceId).push(p.memberId); }
+    const perService = list.map((s) => {
+      const n = (presentBy.get(s.id) || []).filter((id) => {
+        if (!ids.has(id)) return false;
+        if (ui.bCulte === 'all' || svcA(s) !== 'commun') return true;
+        const m = DB.get('members', id); return m && culteAt(m, s.date) === ui.bCulte;
+      }).length;
+      const x = extras(s);
+      return { s, n, v: x.v, e: x.e, total: n + x.v + x.e };
+    });
     const alerts = DB.list('alerts').filter((a) => per.months.includes(a.createdAt.slice(0, 7)) && ids.has(a.memberId));
     const byMonth = per.months.map((ym) => {
       const sv = list.filter((s) => s.date.startsWith(ym));
       let P = 0, D = 0;
-      for (const r of rows) { const st = memberStats(r.m, sv); P += st.P; D += st.denom; }
+      for (const r of rows) { const st = memberStats(r.m, servicesFor(r.m, sv)); P += st.P; D += st.denom; }
       return { ym, rate: D ? P / D : null, n: sv.length };
     });
+    const sum = (k) => perService.reduce((t, x) => t + x[k], 0);
+    const avg = (k) => (perService.length ? Math.round(sum(k) / perService.length) : 0);
     return { per, list, rows, rate: sumD ? sumP / sumD : null, perService, alerts, byMonth,
-      avg: perService.length ? Math.round(perService.reduce((t, x) => t + x.n, 0) / perService.length) : 0 };
+      avgN: avg('n'), avgTotal: avg('total'), sumV: sum('v'), sumE: sum('e'), sumN: sum('n'), sumTotal: sum('total') };
   }
 
-  function viewBilans() {
-    const now = new Date();
-    const ym = `${now.getFullYear()}-${pad(now.getMonth() + 1)}`;
-    if (!ui.bMonth) ui.bMonth = ym;
-    if (!ui.bQuarter) ui.bQuarter = quarterOf(ym);
-    if (!ui.bYear) ui.bYear = String(now.getFullYear());
-    if (!ui.bCulte) ui.bCulte = 'all';
-    if (!ui.bKind) ui.bKind = 'culte';
-    const isCulte = ui.bKind === 'culte';
+  function bilanFilters(months, quarters, years) {
+    const sel = ui.bMode === 'month'
+      ? `<label for="bper">Mois</label><select id="bper">${months.map((x) => `<option value="${x}" ${x === ui.bMonth ? 'selected' : ''}>${cap(MONTHS[Number(x.slice(5)) - 1])} ${x.slice(0, 4)}</option>`).join('')}</select>`
+      : ui.bMode === 'quarter'
+        ? `<label for="bper">Trimestre</label><select id="bper">${quarters.map((x) => `<option value="${x}" ${x === ui.bQuarter ? 'selected' : ''}>${QNAMES[Number(x.slice(-1)) - 1]} ${x.slice(0, 4)}</option>`).join('')}</select>`
+        : `<label for="bper">Année</label><select id="bper">${years.map((x) => `<option ${x === ui.bYear ? 'selected' : ''}>${x}</option>`).join('')}</select>`;
+    return `<div class="tabs noprint" role="group" aria-label="Période du bilan" style="margin-top:8px">
+          <button type="button" data-act="bmode" data-k="month" aria-pressed="${ui.bMode === 'month'}">Mensuel</button>
+          <button type="button" data-act="bmode" data-k="quarter" aria-pressed="${ui.bMode === 'quarter'}">Trimestriel</button>
+          <button type="button" data-act="bmode" data-k="year" aria-pressed="${ui.bMode === 'year'}">Annuel</button>
+        </div>
+        <div class="seg noprint" role="group" aria-label="Culte" style="margin-top:8px">
+          <button type="button" data-act="bculte" data-k="all" aria-pressed="${ui.bCulte === 'all'}">Tous</button>
+          <button type="button" data-act="bculte" data-k="fr" aria-pressed="${ui.bCulte === 'fr'}">Français</button>
+          <button type="button" data-act="bculte" data-k="jm" aria-pressed="${ui.bCulte === 'jm'}">Jula Moré</button>
+        </div>
+        <div class="noprint grid2" style="margin-top:8px">
+          <div class="field"><label for="bkind">Rencontres</label><select id="bkind">${Object.keys(KINDS).map((k) => `<option value="${k}" ${k === ui.bKind ? 'selected' : ''}>${{ culte: 'Cultes', enseignement: 'Enseignements (mer.)', priere: 'Prières (ven.)', activite: 'Journées spéciales' }[k]}</option>`).join('')}</select></div>
+          <div class="field">${sel}</div>
+        </div>`;
+  }
+  function bindBilanFilters() {
+    document.getElementById('bkind').addEventListener('change', (e) => { ui.bKind = e.target.value; render(); });
+    document.getElementById('bper').addEventListener('change', (e) => {
+      if (ui.bMode === 'month') ui.bMonth = e.target.value; else if (ui.bMode === 'quarter') ui.bQuarter = e.target.value; else ui.bYear = e.target.value;
+      render();
+    });
+  }
+  function periodLists(ym) {
     const svMonths = services().map((s) => s.date.slice(0, 7));
-    const months = [...new Set([ym, ...svMonths])].sort().reverse();
-    const quarters = [...new Set([quarterOf(ym), ...svMonths.map(quarterOf)])].sort().reverse();
-    const years = [...new Set([String(now.getFullYear()), ...svMonths.map((x) => x.slice(0, 4))])].sort().reverse();
+    return [
+      [...new Set([ym, ...svMonths])].sort().reverse(),
+      [...new Set([quarterOf(ym), ...svMonths.map(quarterOf)])].sort().reverse(),
+      [...new Set([ym.slice(0, 4), ...svMonths.map((x) => x.slice(0, 4))])].sort().reverse()
+    ];
+  }
+  const goneTag = (m) => (m.actif === false ? ' <span class="small muted">(parti)</span>' : '');
+
+  function viewBilans() {
+    const ym = initBilanUi();
+    const isCulte = ui.bKind === 'culte';
+    const [months, quarters, years] = periodLists(ym);
     const seuil = Number(DB.setting('seuil', 50)) / 100;
     const b = computeBilan();
-    const culteTitle = isCulte ? (ui.bCulte === 'all' ? 'Tous les cultes' : CULTES[ui.bCulte] + ' (cultes communs inclus)')
-      : `${KINDS[ui.bKind]} · ${ui.bCulte === 'all' ? 'tous les membres' : 'membres du ' + CULTES[ui.bCulte].toLowerCase()}`;
     const low = b.rows.filter((r) => r.st.rate != null && r.st.rate < seuil).sort((x, y) => x.st.rate - y.st.rate);
-    const maxN = Math.max(1, ...b.perService.map((x) => x.n));
+    const maxT = Math.max(1, ...b.perService.map((x) => x.total));
 
     const group = (keyFn) => {
       const g = {};
@@ -855,12 +1118,13 @@
     };
     const groupCard = (title, entries) => `<section class="card"><h3 style="margin-bottom:4px">${title}</h3><dl class="dl">${entries.map(([k, v]) => `<div><dt>${esc(k)} (${v.n})</dt><dd>${pct(v.D ? v.P / v.D : null)}</dd></div>`).join('') || '<div><dt>—</dt><dd></dd></div>'}</dl></section>`;
 
-    let extra = '';
     const perCard = `<section class="card" style="display:flex;flex-direction:column;gap:12px">
         <h3>Présents par rencontre</h3>
-        ${b.perService.length ? b.perService.map((x) => `<div><div class="row between small" style="font-size:14px"><span>${esc(cap(fmtDate(x.s.date, { weekday: 'short', day: 'numeric', month: 'short' })))} · ${esc(svcName(x.s))}</span><strong>${x.n}</strong></div>
-          <div class="hbar" style="margin-top:4px"><i style="width:${Math.round(x.n / maxN * 100)}%"></i></div></div>`).join('') : '<div class="small muted">Aucune rencontre clôturée sur cette période.</div>'}
+        ${b.perService.length ? b.perService.map((x) => `<div><div class="row between small" style="font-size:14px;gap:8px"><span>${esc(cap(fmtDate(x.s.date, { weekday: 'short', day: 'numeric', month: 'short' })))} · ${esc(svcName(x.s))}</span><strong>${x.total}</strong></div>
+          <div class="small muted">${x.n} membre${x.n > 1 ? 's' : ''} · ${x.v} non enregistré${x.v > 1 ? 's' : ''} · ${x.e} enfant${x.e > 1 ? 's' : ''}</div>
+          <div class="hbar" style="margin-top:4px"><i style="width:${Math.round(x.total / maxT * 100)}%"></i></div></div>`).join('') : '<div class="small muted">Aucune rencontre clôturée sur cette période.</div>'}
       </section>`;
+    let extra = '';
     if (ui.bMode === 'month') {
       extra = perCard;
     } else {
@@ -882,74 +1146,108 @@
         ${groupCard('Par sexe', group((m) => m.sexe))}`;
     }
 
-    const table = b.rows.slice().sort((x, y) => norm(x.m.nom + x.m.prenoms).localeCompare(norm(y.m.nom + y.m.prenoms)));
-    const sel = ui.bMode === 'month'
-      ? `<label for="bper">Mois</label><select id="bper">${months.map((x) => `<option value="${x}" ${x === ui.bMonth ? 'selected' : ''}>${cap(MONTHS[Number(x.slice(5)) - 1])} ${x.slice(0, 4)}</option>`).join('')}</select>`
-      : ui.bMode === 'quarter'
-        ? `<label for="bper">Trimestre</label><select id="bper">${quarters.map((x) => `<option value="${x}" ${x === ui.bQuarter ? 'selected' : ''}>${QNAMES[Number(x.slice(-1)) - 1]} ${x.slice(0, 4)}</option>`).join('')}</select>`
-        : `<label for="bper">Année</label><select id="bper">${years.map((x) => `<option ${x === ui.bYear ? 'selected' : ''}>${x}</option>`).join('')}</select>`;
     $app.innerHTML = `
       <header class="head light">
         <div class="row between">${KICKER}<a class="iconbtn noprint" href="#/reglages" aria-label="Réglages">${ICON.gear}</a></div>
         <h1>Bilans de participation</h1>
-        <div class="tabs noprint" role="group" aria-label="Période du bilan" style="margin-top:8px">
-          <button type="button" data-act="bmode" data-k="month" aria-pressed="${ui.bMode === 'month'}">Mensuel</button>
-          <button type="button" data-act="bmode" data-k="quarter" aria-pressed="${ui.bMode === 'quarter'}">Trimestriel</button>
-          <button type="button" data-act="bmode" data-k="year" aria-pressed="${ui.bMode === 'year'}">Annuel</button>
-        </div>
-        <div class="seg noprint" role="group" aria-label="Culte" style="margin-top:8px">
-          <button type="button" data-act="bculte" data-k="all" aria-pressed="${ui.bCulte === 'all'}">Tous</button>
-          <button type="button" data-act="bculte" data-k="fr" aria-pressed="${ui.bCulte === 'fr'}">Français</button>
-          <button type="button" data-act="bculte" data-k="jm" aria-pressed="${ui.bCulte === 'jm'}">Jula Moré</button>
-        </div>
-        <div class="noprint grid2" style="margin-top:8px">
-          <div class="field"><label for="bkind">Rencontres</label><select id="bkind">${Object.entries(KINDS).map(([k, l]) => `<option value="${k}" ${k === ui.bKind ? 'selected' : ''}>${k === 'culte' ? 'Cultes' : k === 'enseignement' ? 'Enseignements (mer.)' : k === 'priere' ? 'Prières (ven.)' : l}</option>`).join('')}</select></div>
-          <div class="field">${sel}</div>
-        </div>
+        ${bilanFilters(months, quarters, years)}
       </header>
       <div class="wrap">
-        <div><h2 style="font-size:20px">${esc(b.per.title)}</h2><div class="small muted">${esc(culteTitle)}</div></div>
+        <div><h2 style="font-size:20px">${esc(b.per.title)}</h2><div class="small muted">${esc(bilanSubtitle())}</div></div>
+        <a class="btn primary block noprint" href="#/grandbilan">Grand bilan : tableau complet des présences</a>
         <div class="grid2">
           <div class="tile"><b>${b.list.length}</b><span>${isCulte ? 'cultes comptés' : 'rencontres pointées'}</span></div>
-          <div class="tile"><b>${pct(b.rate)}</b><span>taux de participation</span></div>
-          <div class="tile"><b>${b.avg}</b><span>présents en moyenne par culte</span></div>
+          <div class="tile"><b>${pct(b.rate)}</b><span>taux de participation des membres</span></div>
+          <div class="tile"><b>${b.avgN}</b><span>membres présents en moyenne</span></div>
+          <div class="tile"><b>${b.avgTotal}</b><span>personnes présentes en moyenne (total)</span></div>
+          <div class="tile"><b>${b.sumV} · ${b.sumE}</b><span>non enregistrés · enfants (cumul)</span></div>
           ${isCulte ? `<div class="tile"><b>${b.alerts.length}</b><span>rappels d'absence créés</span></div>` : `<div class="tile"><b>${b.rows.length}</b><span>membres concernés</span></div>`}
         </div>
         ${extra}
         <section class="card" style="display:flex;flex-direction:column;gap:6px">
           <h3>Membres sous ${Math.round(seuil * 100)} %</h3>
           ${low.length ? low.map((r) => `<a href="#/membre/${r.m.id}" class="row" style="padding:6px 0;border-top:1px solid #EFEDE7;text-decoration:none;color:inherit">
-            ${photoHtml(r.m, 40)}<span style="flex:1;font-weight:600">${esc(fullName(r.m))}</span><span class="low">${pct(r.st.rate)}</span></a>`).join('') : '<div class="small muted">Aucun membre sous le seuil.</div>'}
+            ${photoHtml(r.m, 40)}<span style="flex:1;font-weight:600">${esc(fullName(r.m))}${goneTag(r.m)}</span><span class="low">${pct(r.st.rate)}</span></a>`).join('') : '<div class="small muted">Aucun membre sous le seuil.</div>'}
         </section>
         <section class="card">
           <h3 style="margin-bottom:6px">Détail par membre</h3>
-          ${table.length ? `<div style="overflow-x:auto"><table class="rates"><thead><tr><th>Membre</th><th class="num">Présent</th><th class="num">Excusé</th><th class="num">Taux</th></tr></thead><tbody>
-            ${table.map((r) => `<tr><td>${esc(fullName(r.m))}</td><td class="num">${r.st.P}/${r.st.denom}</td><td class="num">${r.st.E}</td><td class="num ${r.st.rate != null && r.st.rate < seuil ? 'low' : ''}">${pct(r.st.rate)}</td></tr>`).join('')}
-          </tbody></table></div>` : '<div class="small muted">Pas encore de données sur cette période.</div>'}
+          ${b.rows.length ? `<div style="overflow-x:auto"><table class="rates"><thead><tr><th>Membre</th><th class="num">Prés.</th><th class="num">Abs.</th><th class="num">dont exc.</th><th class="num">Taux</th></tr></thead><tbody>
+            ${b.rows.map((r) => `<tr><td>${esc(fullName(r.m))}${goneTag(r.m)}</td><td class="num">${r.st.P}/${r.st.denom}</td><td class="num">${r.st.abs}</td><td class="num">${r.st.E}</td><td class="num ${r.st.rate != null && r.st.rate < seuil ? 'low' : ''}">${pct(r.st.rate)}</td></tr>`).join('')}
+          </tbody></table></div><p class="small muted" style="margin:8px 0 0">Une absence excusée compte comme absence. Elle n’entraîne pas de rappel.</p>` : '<div class="small muted">Pas encore de données sur cette période.</div>'}
         </section>
       </div>
       <div class="foot"><button type="button" class="btn dark" style="flex:1" data-act="pdf">Exporter en PDF</button>
         <button type="button" class="btn ghost" style="flex:1;border-color:var(--ink);color:var(--ink)" data-act="csv">Exporter en Excel</button></div>`;
-    document.getElementById('bkind').addEventListener('change', (e) => { ui.bKind = e.target.value; render(); });
-    document.getElementById('bper').addEventListener('change', (e) => {
-      if (ui.bMode === 'month') ui.bMonth = e.target.value; else if (ui.bMode === 'quarter') ui.bQuarter = e.target.value; else ui.bYear = e.target.value;
-      render();
-    });
+    bindBilanFilters();
+  }
+
+  function fileKey(b, prefix) {
+    const suffix = ui.bCulte === 'all' ? '' : '-' + (ui.bCulte === 'fr' ? 'francais' : 'jula-more');
+    const kindSuffix = ui.bKind === 'culte' ? '' : '-' + ui.bKind;
+    return `${prefix}-${b.per.key}${kindSuffix}${suffix}.csv`;
   }
 
   function exportCsv() {
     const b = computeBilan();
-    const culte = ui.bCulte === 'all' ? 'Tous les membres' : CULTES[ui.bCulte];
-    const rows = [['Bilan de participation — TCO', KINDS[ui.bKind || 'culte'], b.per.title, culte], [],
-      ['Nom', 'Prénoms', 'Culte', 'Sexe', 'Zone', 'Statut', "Baptisé(e) d'eau", 'Présences', 'Absences', 'Excusé', 'Cultes comptés', 'Taux (%)']];
-    for (const r of b.rows.sort((x, y) => norm(x.m.nom + x.m.prenoms).localeCompare(norm(y.m.nom + y.m.prenoms)))) {
-      rows.push([r.m.nom, r.m.prenoms, r.m.culte ? CULTE_SHORT[r.m.culte] : 'À préciser', r.m.sexe, r.m.zone, r.m.statut, r.m.baptise, r.st.P, r.st.A, r.st.E, r.st.denom, r.st.rate == null ? '' : Math.round(r.st.rate * 100)]);
+    const rows = [['Bilan de participation — TCO', KINDS[ui.bKind], b.per.title, bilanSubtitle()], [],
+      ['Nom', 'Prénoms', 'Culte', 'Sexe', 'Zone', 'Statut', "Baptisé(e) d'eau", 'Présences', 'Absences (total)', 'dont excusées', 'Rencontres', 'Taux (%)', 'Parti(e)']];
+    for (const r of b.rows) {
+      rows.push([r.m.nom, r.m.prenoms, r.m.culte ? CULTE_SHORT[r.m.culte] : 'À préciser', r.m.sexe, r.m.zone, r.m.statut, r.m.baptise, r.st.P, r.st.abs, r.st.E, r.st.denom, r.st.rate == null ? '' : Math.round(r.st.rate * 100), r.m.actif === false ? 'oui' : '']);
     }
-    rows.push([], ['Rencontre', 'Date', 'Présents']);
-    for (const x of b.perService) rows.push([svcName(x.s), x.s.date, x.n]);
-    const suffix = ui.bCulte === 'all' ? '' : '-' + (ui.bCulte === 'fr' ? 'francais' : 'jula-more');
-    const kindSuffix = (ui.bKind || 'culte') === 'culte' ? '' : '-' + ui.bKind;
-    saveText(`bilan-presences-${b.per.key}${kindSuffix}${suffix}.csv`, 'text/csv', toCsv(rows));
+    rows.push([], ['Rencontre', 'Date', 'Membres présents', 'Non enregistrés', 'Enfants', 'Total présents']);
+    for (const x of b.perService) rows.push([svcName(x.s), x.s.date, x.n, x.v, x.e, x.total]);
+    rows.push(['Total', '', b.sumN, b.sumV, b.sumE, b.sumTotal]);
+    saveText(fileKey(b, 'bilan-presences'), 'text/csv', toCsv(rows));
+  }
+
+  /* ---------- Grand bilan : tous les membres × chaque rencontre ---------- */
+  function gridCell(m, s) {
+    if (!servicesFor(m, [s]).length || !eligible(m, s)) return '';
+    return (presence(s.id, m.id) || { status: 'A' }).status;
+  }
+
+  function viewGrandBilan() {
+    const ym = initBilanUi();
+    const [months, quarters, years] = periodLists(ym);
+    const b = computeBilan();
+    const cols = b.list;
+    const dense = cols.length > 26 ? ' dense' : '';
+    $app.innerHTML = `
+      <div class="bar noprint"><a class="iconbtn" href="#/bilans" aria-label="Retour aux bilans">${ICON.back}</a><h1>Grand bilan</h1></div>
+      <header class="head light noprint" style="padding-top:4px">${bilanFilters(months, quarters, years)}</header>
+      <div class="wrap gb-wrap">
+        <div><h2 style="font-size:20px">Grand bilan des présences · ${esc(b.per.title)}</h2><div class="small muted">TCO · ${esc(bilanSubtitle())}</div></div>
+        <div class="row noprint" style="gap:8px"><button type="button" class="btn dark sm" style="flex:1" data-act="gb-pdf">Exporter en PDF</button><button type="button" class="btn ghost sm" style="flex:1" data-act="gb-csv">Exporter en Excel</button></div>
+        <p class="small muted" style="margin:0">P présent · A absent · E excusé (compté absent) · case vide : rencontre qui ne concerne pas le membre. FR français · JM Jula Moré · COM commun · ENS enseignement · PRI prière · JS journée spéciale.</p>
+        ${cols.length && b.rows.length ? `<div class="gb-scroll"><table class="gb${dense}">
+          <thead><tr><th class="gb-name">Membre</th>${cols.map((s) => `<th title="${esc(svcName(s))}"><span>${fmtDM(s.date)}</span><span class="gb-code">${CODE(s)}</span></th>`).join('')}<th class="gb-tot">Prés.</th><th class="gb-tot">Abs.</th><th class="gb-tot">dont exc.</th><th class="gb-tot">Taux</th></tr></thead>
+          <tbody>${b.rows.map((r) => `<tr><th class="gb-name">${esc(fullName(r.m))}${r.m.actif === false ? ' (parti)' : ''}</th>${cols.map((s) => { const c = gridCell(r.m, s); return `<td class="c${c}">${c}</td>`; }).join('')}<td class="gb-tot">${r.st.P}</td><td class="gb-tot">${r.st.abs}</td><td class="gb-tot">${r.st.E}</td><td class="gb-tot">${pct(r.st.rate)}</td></tr>`).join('')}</tbody>
+          <tfoot>
+            <tr><th class="gb-name">Membres présents</th>${b.perService.map((x) => `<td>${x.n}</td>`).join('')}<td class="gb-tot">${b.sumN}</td><td class="gb-tot" colspan="3"></td></tr>
+            <tr><th class="gb-name">Non enregistrés</th>${b.perService.map((x) => `<td>${x.v}</td>`).join('')}<td class="gb-tot">${b.sumV}</td><td class="gb-tot" colspan="3"></td></tr>
+            <tr><th class="gb-name">Enfants</th>${b.perService.map((x) => `<td>${x.e}</td>`).join('')}<td class="gb-tot">${b.sumE}</td><td class="gb-tot" colspan="3"></td></tr>
+            <tr class="gb-total"><th class="gb-name">Total présents</th>${b.perService.map((x) => `<td>${x.total}</td>`).join('')}<td>${b.sumTotal}</td><td colspan="3"></td></tr>
+          </tfoot></table></div>` : '<div class="empty">Aucune rencontre clôturée sur cette période.</div>'}
+      </div>`;
+    bindBilanFilters();
+  }
+
+  function exportGrandCsv() {
+    const b = computeBilan();
+    const cols = b.list;
+    const rows = [['Grand bilan des présences — TCO', KINDS[ui.bKind], b.per.title, bilanSubtitle()], [],
+      ['Nom', 'Prénoms', 'Culte'].concat(cols.map((s) => `${fmtDM(s.date)} ${svcName(s)}`), ['Présences', 'Absences (total)', 'dont excusées', 'Taux (%)'])];
+    for (const r of b.rows) {
+      rows.push([r.m.nom + (r.m.actif === false ? ' (parti)' : ''), r.m.prenoms, r.m.culte ? CULTE_SHORT[r.m.culte] : 'À préciser']
+        .concat(cols.map((s) => gridCell(r.m, s)), [r.st.P, r.st.abs, r.st.E, r.st.rate == null ? '' : Math.round(r.st.rate * 100)]));
+    }
+    rows.push([]);
+    rows.push(['Membres présents', '', ''].concat(b.perService.map((x) => x.n), [b.sumN]));
+    rows.push(['Non enregistrés', '', ''].concat(b.perService.map((x) => x.v), [b.sumV]));
+    rows.push(['Enfants', '', ''].concat(b.perService.map((x) => x.e), [b.sumE]));
+    rows.push(['Total présents', '', ''].concat(b.perService.map((x) => x.total), [b.sumTotal]));
+    rows.push([], ['Légende : P présent, A absent, E excusé (compté absent), case vide = rencontre qui ne concerne pas le membre']);
+    saveText(fileKey(b, 'grand-bilan'), 'text/csv', toCsv(rows));
   }
 
   /* ================= RÉGLAGES ================= */
@@ -965,14 +1263,15 @@
             <span class="small muted" style="margin-top:4px">{prenom} est remplacé par le prénom du membre.</span></div>
           <button class="btn primary" type="submit">Enregistrer</button>
         </form>
+        ${pinCard()}
         <section class="card" style="display:flex;flex-direction:column;gap:10px">
           <h2>Sauvegarde des données</h2>
-          <p class="small muted" style="margin:0">Les données sont enregistrées sur ce téléphone uniquement (${nM} membre${nM > 1 ? 's' : ''}, ${nS} culte${nS > 1 ? 's' : ''}). Faites une sauvegarde chaque semaine et gardez-la en lieu sûr, ou utilisez-la pour transférer les données sur un autre téléphone.</p>
+          <p class="small muted" style="margin:0">Les données sont enregistrées sur ce téléphone uniquement (${nM} membre${nM > 1 ? 's' : ''}, ${nS} rencontre${nS > 1 ? 's' : ''}). Faites une sauvegarde chaque semaine et gardez-la en lieu sûr, ou utilisez-la pour transférer les données sur un autre téléphone.</p>
           <button type="button" class="btn ghost" data-act="backup">Créer une sauvegarde</button>
           <label class="btn ghost" style="margin:0">Restaurer une sauvegarde<input type="file" accept="application/json,.json" id="restore" hidden></label>
           <div id="rerr" class="err" role="alert"></div>
         </section>
-        <p class="small muted" style="text-align:center">TCO Présences · version 1.8</p>
+        <p class="small muted" style="text-align:center">TCO Présences · version 2.0</p>
       </div>`;
     document.getElementById('sform').addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -980,6 +1279,7 @@
       await DB.setSetting('messageRappel', document.getElementById('msg').value.trim() || DEFAULT_MSG);
       toast('Réglages enregistrés');
     });
+    bindPinCard();
     document.getElementById('restore').addEventListener('change', (e) => {
       const f = e.target.files[0]; if (!f) return;
       const fr = new FileReader();
@@ -996,6 +1296,119 @@
         } catch (err) { document.getElementById('rerr').textContent = err instanceof SyntaxError ? "Ce fichier n'est pas une sauvegarde TCO Présences. Choisissez le fichier « sauvegarde-tco-presences-….json »." : 'Restauration impossible : ' + err.message; }
       };
       fr.readAsText(f);
+    });
+  }
+
+  /* ================= CODE D'ACCÈS ================= */
+  // Code de 4 à 6 chiffres demandé à l'ouverture et après 5 minutes en arrière-plan.
+  // Un code de secours (donné une seule fois) permet de le désactiver en cas d'oubli.
+  async function sha(text) {
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+    return [...new Uint8Array(buf)].map((x) => x.toString(16).padStart(2, '0')).join('');
+  }
+  const pinSet = () => !!DB.setting('pinHash', null);
+  const pinOk = async (pin) => (await sha(DB.setting('pinSalt', '') + pin)) === DB.setting('pinHash', '');
+  let locked = false, hiddenAt = 0, fails = 0, waitUntil = 0;
+
+  async function setPin(pin) {
+    const salt = uid();
+    const rec = Array.from(crypto.getRandomValues(new Uint8Array(8))).map((x) => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[x % 32]).join('');
+    await DB.setSetting('pinSalt', salt);
+    await DB.setSetting('pinHash', await sha(salt + pin));
+    await DB.setSetting('recoveryHash', await sha(salt + 'R' + rec));
+    return rec.slice(0, 4) + '-' + rec.slice(4);
+  }
+  async function clearPin() { for (const k of ['pinHash', 'pinSalt', 'recoveryHash']) await DB.setSetting(k, null); }
+
+  function showLock(after) {
+    locked = true;
+    const box = document.getElementById('lock');
+    document.body.classList.add('locked');
+    box.hidden = false;
+    box.innerHTML = `<div class="lock-in">
+      <span class="lock-logo"><img src="logo.png" alt=""></span>
+      <h1>TCO Présences</h1>
+      <form id="lockForm" class="lock-form" novalidate>
+        <label for="lockPin">Code d’accès</label>
+        <input id="lockPin" type="password" inputmode="numeric" autocomplete="off" maxlength="6">
+        <div id="lockErr" class="lock-err" role="alert"></div>
+        <button class="btn block lock-btn" type="submit">Déverrouiller</button>
+      </form>
+      <button type="button" class="lock-link" id="lockForgot">Code oublié ?</button>
+      <form id="recForm" class="lock-form" hidden novalidate>
+        <label for="recCode">Code de secours (donné à la création du code)</label>
+        <input id="recCode" type="text" autocomplete="off" autocapitalize="characters" placeholder="XXXX-XXXX">
+        <div id="recErr" class="lock-err" role="alert"></div>
+        <button class="btn block lock-btn" type="submit">Désactiver le code</button>
+      </form></div>`;
+    const pin = document.getElementById('lockPin');
+    setTimeout(() => pin.focus(), 60);
+    document.getElementById('lockForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const err = document.getElementById('lockErr');
+      if (Date.now() < waitUntil) { err.textContent = `Trop d’essais. Réessayez dans ${Math.ceil((waitUntil - Date.now()) / 1000)} secondes.`; return; }
+      if (!(await pinOk(pin.value))) {
+        fails++; pin.value = '';
+        if (fails >= 5) { waitUntil = Date.now() + 30000; fails = 0; }
+        err.textContent = 'Code incorrect.'; return;
+      }
+      fails = 0; unlock(after);
+    });
+    document.getElementById('lockForgot').addEventListener('click', () => { document.getElementById('recForm').hidden = false; document.getElementById('recCode').focus(); });
+    document.getElementById('recForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const code = document.getElementById('recCode').value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if ((await sha(DB.setting('pinSalt', '') + 'R' + code)) !== DB.setting('recoveryHash', '')) { document.getElementById('recErr').textContent = 'Code de secours incorrect.'; return; }
+      await clearPin(); unlock(after); toast('Code d’accès désactivé. Vous pouvez en créer un nouveau dans les Réglages.');
+    });
+  }
+  function unlock(after) {
+    locked = false;
+    const box = document.getElementById('lock');
+    box.hidden = true; box.innerHTML = '';
+    document.body.classList.remove('locked');
+    if (after) after();
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) hiddenAt = Date.now();
+    else if (!locked && hiddenAt && Date.now() - hiddenAt > 5 * 60 * 1000 && pinSet()) showLock();
+  });
+
+  function pinCard() {
+    if (ui.recoveryCode) {
+      return `<section class="card" style="display:flex;flex-direction:column;gap:10px">
+        <h2>Code d’accès activé</h2>
+        <div class="banner warn"><strong>Notez ce code de secours et gardez-le en lieu sûr :</strong>
+          <div style="font-size:26px;font-weight:800;letter-spacing:3px;margin-top:6px">${esc(ui.recoveryCode)}</div>
+          Il permet de désactiver le code d’accès si vous l’oubliez. Il ne sera plus jamais affiché.</div>
+        <button type="button" class="btn primary" data-act="rec-done">J’ai noté le code de secours</button></section>`;
+    }
+    const on = pinSet();
+    return `<form class="card" id="pinForm" style="display:flex;flex-direction:column;gap:12px" novalidate>
+        <h2>Code d’accès</h2>
+        <p class="small muted" style="margin:0">${on ? 'L’application est protégée par un code (4 à 6 chiffres), demandé à l’ouverture et après 5 minutes d’inactivité.' : 'Protégez les informations des membres : un code (4 à 6 chiffres) sera demandé à l’ouverture de l’application.'}</p>
+        ${on ? '<div class="field"><label for="pin-cur">Code actuel</label><input id="pin-cur" type="password" inputmode="numeric" maxlength="6" autocomplete="off"></div>' : ''}
+        <div class="grid2">
+          <div class="field"><label for="pin-new">${on ? 'Nouveau code' : 'Code'}</label><input id="pin-new" type="password" inputmode="numeric" maxlength="6" autocomplete="off"></div>
+          <div class="field"><label for="pin-new2">Confirmer</label><input id="pin-new2" type="password" inputmode="numeric" maxlength="6" autocomplete="off"></div>
+        </div>
+        <div id="pin-err" class="err" role="alert"></div>
+        <button class="btn primary" type="submit">${on ? 'Changer le code' : 'Activer le code d’accès'}</button>
+        ${on ? '<button type="button" class="btn danger" data-act="pin-off">Désactiver le code (code actuel requis)</button>' : ''}
+      </form>`;
+  }
+  function bindPinCard() {
+    const f = document.getElementById('pinForm'); if (!f) return;
+    f.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const err = document.getElementById('pin-err');
+      const cur = document.getElementById('pin-cur');
+      const a = document.getElementById('pin-new').value, b = document.getElementById('pin-new2').value;
+      if (cur && !(await pinOk(cur.value))) { err.textContent = 'Code actuel incorrect.'; return; }
+      if (!/^\d{4,6}$/.test(a)) { err.textContent = 'Le code doit contenir 4 à 6 chiffres.'; return; }
+      if (a !== b) { err.textContent = 'Les deux codes ne sont pas identiques.'; return; }
+      ui.recoveryCode = await setPin(a);
+      render();
     });
   }
 
@@ -1021,13 +1434,45 @@
       case 'close-cancel': ui.closeArmed = false; drawPointage(); break;
       case 'close-confirm': await closeService(); break;
       case 'reopen': {
-        if (openService()) { toast("Clôturez d'abord le culte en cours"); break; }
+        if (openService()) { toast("Clôturez d'abord la rencontre en cours"); break; }
         const sv = DB.get('services', el.dataset.id);
         // les absences automatiques redeviennent « non pointé » pour la correction
         const autoA = DB.list('presences').filter((p) => p.serviceId === sv.id && p.status === 'A');
         for (const p of autoA) await DB.del('presences', p.id);
         await DB.put('services', Object.assign({}, sv, { closed: false }));
-        ui.lastClose = null; render(); break;
+        ui.lastClose = null; go('#/pointage'); break;
+      }
+      case 'cnt': {
+        // La case est mise à jour tout de suite : chaque appui compte, même rapide
+        const inp = document.getElementById('cnt-' + el.dataset.f);
+        const v = num(num(inp && inp.value) + Number(el.dataset.d));
+        if (inp) inp.value = v;
+        await saveCount(el.dataset.f, v); break;
+      }
+      case 'sdel-arm': ui.delArmed = el.dataset.id; render(); break;
+      case 'sdel-cancel': ui.delArmed = null; render(); break;
+      case 'sdel-confirm': {
+        const id = el.dataset.id;
+        for (const pr of DB.list('presences').filter((x) => x.serviceId === id)) await DB.del('presences', pr.id);
+        await DB.del('services', id);
+        await refreshAlerts();
+        ui.delArmed = null; ui.lastClose = null; toast('Rencontre supprimée'); go('#/historique'); break;
+      }
+      case 'gb-pdf': printPage('Grand bilan TCO', true); break;
+      case 'gb-csv': exportGrandCsv(); break;
+      case 'ev-edit': ui.evEdit = el.dataset.ev; render(); window.scrollTo(0, 0); break;
+      case 'ev-cancel': ui.evEdit = null; render(); break;
+      case 'pin-off': {
+        const cur = document.getElementById('pin-cur');
+        if (!cur || !(await pinOk(cur.value))) { document.getElementById('pin-err').textContent = 'Entrez le code actuel pour le désactiver.'; break; }
+        await clearPin(); toast('Code d’accès désactivé'); render(); break;
+      }
+      case 'rec-done': ui.recoveryCode = null; toast('Code d’accès activé'); render(); break;
+      case 'reactivate': {
+        const m = DB.get('members', el.dataset.id);
+        const deps = departs(m).map((d) => (d.to ? d : Object.assign({}, d, { to: today() })));
+        await DB.put('members', Object.assign({}, m, { actif: true, partiLe: null, departs: deps }));
+        toast(`${fullName(m)} est de nouveau actif(ve)`); render(); break;
       }
       case 'rtab': ui.rTab = el.dataset.k; ui.editing = null; render(); break;
       case 'edit': ui.editing = el.dataset.id; ui.kind = 'Appel'; render(); break;
@@ -1042,15 +1487,15 @@
       }
       case 'mculte': ui.mCulte = el.dataset.k; drawMembres(); break;
       case 'csv': exportCsv(); break;
-      case 'pdf': printPage('Bilan TCO'); break;
+      case 'pdf': printPage('Bilan TCO', false); break;
       case 'backup': saveText(`sauvegarde-tco-presences-${today()}.json`, 'application/json', JSON.stringify(DB.dump())); break;
       case 'leave-arm': ui.leaveArmed = el.dataset.id; render(); break;
       case 'leave-cancel': ui.leaveArmed = false; render(); break;
       case 'leave-confirm': {
         const m = DB.get('members', el.dataset.id);
-        await DB.put('members', Object.assign({}, m, { actif: false, partiLe: today() }));
-        const al = openAlerts().filter((a) => a.memberId === m.id);
-        for (const a of al) await DB.put('alerts', Object.assign({}, a, { status: 'done', kind: 'Autre', note: 'Membre marqué comme parti', doneAt: today() }));
+        const deps = departs(m).slice(); deps.push({ from: today(), to: null });
+        await DB.put('members', Object.assign({}, m, { actif: false, partiLe: today(), departs: deps }));
+        await refreshAlerts();
         ui.leaveArmed = false; toast(`${fullName(m)} marqué(e) comme parti(e)`); go('#/membres'); break;
       }
     }
@@ -1065,9 +1510,13 @@
     ui.editing = null; toast('Rappel clos'); render();
   });
 
-  window.addEventListener('hashchange', () => { ui.closeArmed = false; ui.leaveArmed = false; ui.dupOk = false; render(); window.scrollTo(0, 0); });
+  document.addEventListener('change', (e) => {
+    const inp = e.target.closest && e.target.closest('input[data-cnt]');
+    if (inp) saveCount(inp.dataset.cnt, inp.value);
+  });
+  window.addEventListener('hashchange', () => { ui.closeArmed = false; ui.leaveArmed = false; ui.dupOk = false; ui.delArmed = null; render(); window.scrollTo(0, 0); });
 
-  DB.init().then(render).catch((err) => {
+  DB.init().then(() => { if (pinSet()) showLock(render); else render(); }).catch((err) => {
     $app.innerHTML = `<div class="wrap"><div class="banner warn">Impossible d'ouvrir les données : ${esc(err.message)}</div></div>`;
   });
 })();

@@ -181,17 +181,24 @@ public class MainActivity extends ComponentActivity {
         try {
             Intent i;
             if ("sms".equals(uri.getScheme()) || "smsto".equals(uri.getScheme())) {
-                String ssp = uri.getSchemeSpecificPart();
-                String number = ssp.contains("?") ? ssp.substring(0, ssp.indexOf('?')) : ssp;
-                i = new Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:" + number));
-                String body = uri.getQueryParameter("body");
-                if (body == null) {
-                    int q = ssp.indexOf("body=");
-                    if (q >= 0) body = Uri.decode(ssp.substring(q + 5));
+                // « sms:70000000?body=… » est une adresse « opaque » : on la découpe à la main
+                // (getQueryParameter() n'est pas utilisable dessus et faisait échouer le bouton SMS).
+                String raw = uri.getEncodedSchemeSpecificPart();
+                if (raw == null) raw = "";
+                int q = raw.indexOf('?');
+                String number = Uri.decode(q >= 0 ? raw.substring(0, q) : raw).replaceAll("[^0-9+]", "");
+                String body = null;
+                if (q >= 0) {
+                    for (String part : raw.substring(q + 1).split("&")) {
+                        if (part.startsWith("body=")) body = Uri.decode(part.substring(5));
+                    }
                 }
+                i = new Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:" + number));
                 if (body != null) i.putExtra("sms_body", body);
             } else if ("tel".equals(uri.getScheme())) {
-                i = new Intent(Intent.ACTION_DIAL, uri);
+                // Ouvre le clavier d'appel avec le numéro déjà saisi (l'appel se lance d'un appui sur le bouton vert)
+                String number = Uri.decode(uri.getEncodedSchemeSpecificPart() == null ? "" : uri.getEncodedSchemeSpecificPart()).replaceAll("[^0-9+]", "");
+                i = new Intent(Intent.ACTION_DIAL, Uri.parse("tel:" + number));
             } else {
                 i = new Intent(Intent.ACTION_VIEW, uri);
             }
@@ -267,6 +274,18 @@ public class MainActivity extends ComponentActivity {
                 String job = (title == null || title.isEmpty()) ? "Bilan TCO" : title;
                 pm.print(job, webView.createPrintDocumentAdapter(job),
                         new PrintAttributes.Builder().setMediaSize(PrintAttributes.MediaSize.ISO_A4).build());
+            });
+        }
+
+        /** Impression en paysage (grand bilan : un membre par ligne, une rencontre par colonne). */
+        @JavascriptInterface
+        public void printPageLandscape(String title) {
+            runOnUiThread(() -> {
+                PrintManager pm = (PrintManager) getSystemService(PRINT_SERVICE);
+                if (pm == null) return;
+                String job = (title == null || title.isEmpty()) ? "Grand bilan TCO" : title;
+                pm.print(job, webView.createPrintDocumentAdapter(job),
+                        new PrintAttributes.Builder().setMediaSize(PrintAttributes.MediaSize.ISO_A4.asLandscape()).build());
             });
         }
     }

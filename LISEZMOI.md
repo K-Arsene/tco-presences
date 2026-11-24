@@ -39,9 +39,9 @@ Configuration requise : Android 7.0 ou plus récent.
 
 Règles appliquées :
 - Seuls les cultes **comptés** entrent dans les bilans et la règle des 2 absences. Les cultes du dimanche sont comptés par défaut, et la case peut être changée à l'ouverture de chaque culte.
-- Une absence **excusée** ne compte pas comme absence et n'entre pas dans le calcul du taux.
+- Une absence **excusée** compte comme absence dans les statistiques. Elle ne déclenche pas de rappel : il faut 2 absences successives sans excuse.
 - Un membre n'est compté qu'à partir de sa date d'arrivée à l'église. Le jour même ne compte que s'il a été pointé.
-- Taux de participation = présences ÷ (cultes comptés depuis son arrivée − absences excusées).
+- Taux de participation = présences ÷ rencontres concernant le membre (depuis son arrivée, hors périodes où il était parti).
 
 ## Important : données et sauvegarde
 - Les données sont enregistrées **sur un seul téléphone**. Si deux responsables pointent sur deux téléphones différents, leurs listes ne se rejoignent pas. Pour la première version, il faut donc **un téléphone de pointage** pour le service d'accueil.
@@ -56,6 +56,17 @@ L'APK est signé avec une clé permanente. Elle est stockée chiffrée dans `sig
 Garder ce mot de passe en lieu sûr. Sans lui, les prochaines versions ne pourront plus s'installer par-dessus l'ancienne.
 
 ## Historique
+- 2.0 :
+  - bouton SMS réparé ; l'appel ouvre le clavier avec le numéro ;
+  - une absence excusée compte comme absence dans les statistiques, sans déclencher de rappel ;
+  - transfert entre cultes avec sa date, sans fausser l'historique ;
+  - membres partis gardés dans les bilans passés, et réactivables ;
+  - rencontres modifiables et supprimables, liste complète des rencontres ;
+  - rappels recalculés après correction ou saisie de cultes passés ;
+  - nombre de membres non enregistrés et d'enfants à chaque rencontre, avec le total des présents ;
+  - grand bilan (membres × rencontres) à l'écran, en Excel et en PDF paysage ;
+  - code d'accès avec code de secours ;
+  - journées spéciales modifiables.
 - 1.8 : corrections des sigles (JAD, ASC).
 - 1.7 :
   - rencontres du soir : enseignement le mercredi, prière le vendredi, avec les membres des deux cultes réunis ;

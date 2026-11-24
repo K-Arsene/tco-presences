@@ -143,8 +143,52 @@ svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2;stroke
 
 #toast{position:fixed;left:16px;right:16px;bottom:88px;background:var(--ink);color:#fff;border-radius:12px;padding:12px 14px;font-size:15px;z-index:20;text-align:center}
 
+/* Compteurs non enregistrés / enfants */
+.cntbtn{min-width:44px;padding:0;font-size:22px;font-weight:700}
+.cntin{width:68px!important;text-align:center;font-weight:700;padding:0 4px!important}
+.segwrap{flex-wrap:wrap}
+.segwrap button{flex:1 0 auto;padding:0 10px}
+
+/* Grand bilan */
+.gb-scroll{overflow-x:auto;background:#fff;border:1px solid var(--line);border-radius:12px;-webkit-overflow-scrolling:touch}
+table.gb{border-collapse:collapse;font-size:13px;white-space:nowrap}
+table.gb th,table.gb td{border:1px solid #ECEAE3;padding:6px 7px;text-align:center}
+table.gb thead th{background:#F6F5F1;font-size:11.5px;font-weight:700;vertical-align:bottom}
+table.gb thead th span{display:block}
+table.gb .gb-code{color:var(--muted);font-weight:600}
+table.gb .gb-name{position:sticky;left:0;z-index:1;background:#fff;text-align:left;font-weight:600;min-width:130px;max-width:170px;white-space:normal}
+table.gb thead .gb-name{background:#F6F5F1;z-index:2}
+table.gb td.cP{background:#E3F0EF;color:var(--brand);font-weight:800}
+table.gb td.cA{background:var(--warn-bg);color:var(--warn-ink);font-weight:800}
+table.gb td.cE{background:#E8E5DC;color:var(--ink);font-weight:800}
+table.gb .gb-tot{background:#FAFAF7;font-weight:700}
+table.gb tfoot th,table.gb tfoot td{background:#F6F5F1;font-weight:700}
+table.gb tfoot .gb-name{background:#F6F5F1}
+table.gb tr.gb-total th,table.gb tr.gb-total td{background:var(--brand);color:#fff}
+
+/* Écran de verrouillage */
+#lock{position:fixed;inset:0;z-index:60;background:var(--brand);color:#fff;display:flex;align-items:center;justify-content:center;padding:24px;overflow-y:auto}
+body.locked #app,body.locked #tabbar,body.locked #toast{visibility:hidden}
+.lock-in{width:100%;max-width:340px;display:flex;flex-direction:column;align-items:center;gap:16px;text-align:center}
+.lock-logo{width:84px;height:84px;border-radius:20px;background:rgba(255,255,255,.12);display:flex;align-items:center;justify-content:center}
+.lock-logo img{width:70px;height:70px;object-fit:contain}
+.lock-in h1{font-size:24px}
+.lock-form{width:100%;display:flex;flex-direction:column;gap:10px}
+.lock-form label{color:#E3F0EF;font-size:14px;margin:0}
+.lock-form input{height:52px!important;font-size:24px!important;text-align:center;letter-spacing:8px;border:0!important;border-radius:12px!important}
+#recCode{letter-spacing:3px;font-size:20px!important}
+.lock-err{color:#FFD9C2;font-weight:700;font-size:14px;min-height:18px}
+.lock-btn{background:#fff;color:var(--brand)}
+.lock-link{background:none;border:0;color:#fff;text-decoration:underline;font-size:15px;min-height:44px}
+
 @media print{
-  #tabbar,.foot,.noprint,#toast{display:none!important}
+  #tabbar,.foot,.noprint,#toast,#lock{display:none!important}
+  body{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .gb-scroll{overflow:visible;border:0}
+  table.gb{font-size:8px}
+  table.gb th,table.gb td{padding:2px 3px}
+  table.gb.dense{font-size:6.5px}
+  table.gb .gb-name{position:static;min-width:0;max-width:none}
   #app{padding:0}
   body{background:#fff}
   .card{break-inside:avoid}
