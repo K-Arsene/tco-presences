@@ -166,6 +166,9 @@ table.gb tfoot th,table.gb tfoot td{background:#F6F5F1;font-weight:700}
 table.gb tfoot .gb-name{background:#F6F5F1}
 table.gb tr.gb-total th,table.gb tr.gb-total td{background:var(--brand);color:#fff}
 
+/* Grand bilan imprimable (pages paysage) */
+.print-only{display:none}
+
 /* Écran de verrouillage */
 #lock{position:fixed;inset:0;z-index:60;background:var(--brand);color:#fff;display:flex;align-items:center;justify-content:center;padding:24px;overflow-y:auto}
 body.locked #app,body.locked #tabbar,body.locked #toast{visibility:hidden}
@@ -189,6 +192,15 @@ body.locked #app,body.locked #tabbar,body.locked #toast{visibility:hidden}
   table.gb th,table.gb td{padding:2px 3px}
   table.gb.dense{font-size:6.5px}
   table.gb .gb-name{position:static;min-width:0;max-width:none}
+  .print-only{display:block!important}
+  .gb-screen{display:none!important}
+  #app{min-height:0}
+  .wrap.gb-wrap{padding:0}
+  .gb-page{break-after:page}
+  .gb-page:last-child{break-after:auto}
+  table.gbp{font-size:7.5px;width:100%}
+  table.gbp th,table.gbp td{padding:2px 2px}
+  table.gbp thead{display:table-header-group}
   #app{padding:0}
   body{background:#fff}
   .card{break-inside:avoid}

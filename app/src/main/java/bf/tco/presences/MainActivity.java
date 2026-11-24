@@ -12,6 +12,7 @@ import android.print.PrintAttributes;
 import android.print.PrintManager;
 import android.provider.MediaStore;
 import android.view.ViewGroup;
+import android.view.WindowManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -274,6 +275,15 @@ public class MainActivity extends ComponentActivity {
                 String job = (title == null || title.isEmpty()) ? "Bilan TCO" : title;
                 pm.print(job, webView.createPrintDocumentAdapter(job),
                         new PrintAttributes.Builder().setMediaSize(PrintAttributes.MediaSize.ISO_A4).build());
+            });
+        }
+
+        /** Masque l'écran dans les applications récentes et bloque les captures quand un code d'accès est actif. */
+        @JavascriptInterface
+        public void setSecure(boolean on) {
+            runOnUiThread(() -> {
+                if (on) getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
+                else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
             });
         }
 

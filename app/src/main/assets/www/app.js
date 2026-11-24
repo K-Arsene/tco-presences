@@ -5,6 +5,8 @@
   'use strict';
   const $app = document.getElementById('app');
   const NATIVE = window.TCOAndroid || null;
+  // Masque l'aperçu de l'application dans les applications récentes (et bloque les captures) quand un code d'accès est actif
+  const setSecure = (on) => { try { if (NATIVE && NATIVE.setSecure) NATIVE.setSecure(!!on); } catch (e) { /* ancienne version */ } };
 
   /* ---------- Outils ---------- */
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -80,7 +82,7 @@
   function photoHtml(m, size) {
     const p = m && DB.get('photos', m.id);
     const label = m ? `Photo de ${esc(fullName(m))}` : 'Photo';
-    if (p && p.data) return `<div class="ph ph${size}"><img src="${p.data}" alt="${label}"></div>`;
+    if (p && p.data) return `<div class="ph ph${size}"><img src="${esc(p.data)}" alt="${label}"></div>`;
     return `<div class="ph ph${size}" role="img" aria-label="${label} (pas encore de photo)">${m ? esc(initials(m)) : ''}</div>`;
   }
 
@@ -156,7 +158,8 @@
     else if (NATIVE && NATIVE.printPage) NATIVE.printPage(title);
     else window.print();
   }
-  const csvCell = (v) => { const s = String(v == null ? '' : v); return /[;"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+  // Un texte commençant par = + - @ serait lu comme une formule par Excel : on le neutralise
+  const csvCell = (v) => { let s = String(v == null ? '' : v); if (typeof v === 'string' && /^[=+\-@\t\r]/.test(s)) s = "'" + s; return /[;"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
   const toCsv = (rows) => '﻿' + rows.map((r) => r.map(csvCell).join(';')).join('\r\n');
 
   function readPhoto(file) {
@@ -187,6 +190,7 @@
   }
 
   /* ---------- Routeur ---------- */
+  let ready = false; // vrai quand les données sont chargées
   const ui = { q: '', filter: 'all', mq: '', closeArmed: false, lastClose: null, rTab: 'open', editing: null, kind: 'Appel',
     bMode: 'month', bMonth: null, bYear: null, formPhoto: null, leaveArmed: false };
 
@@ -421,6 +425,7 @@
           <label class="row" id="scountedrow" style="color:var(--ink);font-size:15px;font-weight:600;margin:0;min-height:44px">
             <input id="scounted" type="checkbox" checked style="width:22px;height:22px">
             Compter ce culte (bilans et règle des 2 absences)</label>
+          <div id="serr" class="err" role="alert"></div>
           <button class="btn primary block" type="submit">Ouvrir le pointage</button>
         </form>
         <a class="btn ghost block" href="#/journees">${ICON.plus}Programmer des journées spéciales</a>
@@ -454,6 +459,16 @@
       e.preventDefault();
       const date = document.getElementById('sdate').value || today();
       const isCulte = kind === 'culte';
+      const serr = document.getElementById('serr');
+      if (date > today()) { serr.textContent = 'On ne peut pas pointer une rencontre à venir : choisissez la date du jour ou une date passée.'; return; }
+      // Même rencontre déjà enregistrée ce jour-là : on prévient (second appui pour confirmer)
+      const twin = services().find((x) => x.date === date && svcKind(x) === kind && (kind !== 'culte' || svcA(x) === assemblee || svcA(x) === 'commun' || assemblee === 'commun'));
+      if (twin && ui.dupSvc !== `${date}|${kind}|${assemblee}`) {
+        ui.dupSvc = `${date}|${kind}|${assemblee}`;
+        serr.textContent = `Attention : « ${svcName(twin)} » est déjà enregistré le ${fmtDate(date, { day: 'numeric', month: 'long' })}. Ouvrir une seconde fois compterait les absents deux fois. Appuyez de nouveau sur « Ouvrir le pointage » seulement s’il s’agit bien d’une autre rencontre.`;
+        return;
+      }
+      ui.dupSvc = null;
       await DB.put('services', { id: uid(), date, time: document.getElementById('stime').value, timeEnd: document.getElementById('send').value,
         kind, assemblee: isCulte ? assemblee : 'commun', type: isCulte ? (assemblee === 'commun' ? 'special' : 'dimanche') : 'semaine',
         label: document.getElementById('slabel').value.trim(), counted: isCulte ? document.getElementById('scounted').checked : false, closed: false });
@@ -572,6 +587,7 @@
 
   async function openEventDay(evId, date) {
     if (openService()) { toast("Clôturez d'abord la rencontre en cours"); return; }
+    if (date > today()) { toast('Ce jour n’est pas encore arrivé : le pointage s’ouvrira le jour même.'); return; }
     const ev = events().find((x) => x.id === evId); if (!ev) return;
     const i = ev.days.findIndex((x) => x.date === date); const day = ev.days[i];
     await DB.put('services', { id: uid(), date, time: day.start, timeEnd: day.end, kind: 'activite', eventId: ev.id, eventType: ev.type,
@@ -665,13 +681,24 @@
       if (!isAct) {
         const date = document.getElementById('rdate').value;
         if (!date) { document.getElementById('rerr2').textContent = 'Indiquez la date.'; return; }
+        if (date > today()) { document.getElementById('rerr2').textContent = 'La date ne peut pas être dans le futur.'; return; }
         const isC = kind === 'culte';
         Object.assign(upd, { date, time: document.getElementById('rtime').value, timeEnd: document.getElementById('rend').value, kind,
           assemblee: isC ? asm : 'commun', type: isC ? (asm === 'commun' ? 'special' : 'dimanche') : 'semaine',
           label: document.getElementById('rlabel').value.trim(), counted: isC ? document.getElementById('rcounted').checked : false });
       }
+      // Type ou culte changé sur une rencontre clôturée : les membres concernés ne sont plus les mêmes,
+      // le pointage est rouvert pour vérification (les absences automatiques sont recalculées à la clôture)
+      const changed = s.closed && !isAct && (upd.kind !== svcKind(s) || upd.assemblee !== svcA(s));
+      if (changed) {
+        const cur = openService();
+        if (cur && cur.id !== s.id) { document.getElementById('rerr2').textContent = "Clôturez d'abord la rencontre en cours, puis recommencez."; return; }
+        for (const pr of DB.list('presences').filter((x) => x.serviceId === s.id && x.status === 'A')) await DB.del('presences', pr.id);
+        upd.closed = false;
+      }
       await DB.put('services', Object.assign({}, DB.get('services', s.id), upd));
       await refreshAlerts();
+      if (changed) { toast('Type modifié : vérifiez le pointage, puis clôturez.'); go('#/pointage'); return; }
       toast('Rencontre mise à jour'); go(s.closed ? '#/historique' : '#/pointage');
     });
   }
@@ -871,6 +898,7 @@
       if (!fd.prenoms) missing.push('les prénoms');
       if (!fd.sexe) missing.push('le sexe');
       if (!fd.tel) missing.push('le téléphone');
+      else { const dg = fd.tel.replace(/\D/g, '').length; if (dg < 8 || dg > 15) missing.push('un numéro de téléphone complet (8 chiffres, ex. 70 12 34 56)'); }
       if (!fd.baptise) missing.push("le baptême d'eau");
       if (!fd.dateArrivee) missing.push("la date d'arrivée");
       if (!fd.culte) missing.push("le culte d'appartenance");
@@ -1216,10 +1244,11 @@
       <div class="bar noprint"><a class="iconbtn" href="#/bilans" aria-label="Retour aux bilans">${ICON.back}</a><h1>Grand bilan</h1></div>
       <header class="head light noprint" style="padding-top:4px">${bilanFilters(months, quarters, years)}</header>
       <div class="wrap gb-wrap">
-        <div><h2 style="font-size:20px">Grand bilan des présences · ${esc(b.per.title)}</h2><div class="small muted">TCO · ${esc(bilanSubtitle())}</div></div>
+        <div class="noprint"><h2 style="font-size:20px">Grand bilan des présences · ${esc(b.per.title)}</h2><div class="small muted">TCO · ${esc(bilanSubtitle())}</div></div>
         <div class="row noprint" style="gap:8px"><button type="button" class="btn dark sm" style="flex:1" data-act="gb-pdf">Exporter en PDF</button><button type="button" class="btn ghost sm" style="flex:1" data-act="gb-csv">Exporter en Excel</button></div>
-        <p class="small muted" style="margin:0">P présent · A absent · E excusé (compté absent) · case vide : rencontre qui ne concerne pas le membre. FR français · JM Jula Moré · COM commun · ENS enseignement · PRI prière · JS journée spéciale.</p>
-        ${cols.length && b.rows.length ? `<div class="gb-scroll"><table class="gb${dense}">
+        <p class="small muted noprint" style="margin:0">P présent · A absent · E excusé (compté absent) · case vide : rencontre qui ne concerne pas le membre. FR français · JM Jula Moré · COM commun · ENS enseignement · PRI prière · JS journée spéciale.</p>
+        <div id="gbPrint" class="print-only"></div>
+        ${cols.length && b.rows.length ? `<div class="gb-scroll gb-screen"><table class="gb${dense}">
           <thead><tr><th class="gb-name">Membre</th>${cols.map((s) => `<th title="${esc(svcName(s))}"><span>${fmtDM(s.date)}</span><span class="gb-code">${CODE(s)}</span></th>`).join('')}<th class="gb-tot">Prés.</th><th class="gb-tot">Abs.</th><th class="gb-tot">dont exc.</th><th class="gb-tot">Taux</th></tr></thead>
           <tbody>${b.rows.map((r) => `<tr><th class="gb-name">${esc(fullName(r.m))}${r.m.actif === false ? ' (parti)' : ''}</th>${cols.map((s) => { const c = gridCell(r.m, s); return `<td class="c${c}">${c}</td>`; }).join('')}<td class="gb-tot">${r.st.P}</td><td class="gb-tot">${r.st.abs}</td><td class="gb-tot">${r.st.E}</td><td class="gb-tot">${pct(r.st.rate)}</td></tr>`).join('')}</tbody>
           <tfoot>
@@ -1250,6 +1279,144 @@
     saveText(fileKey(b, 'grand-bilan'), 'text/csv', toCsv(rows));
   }
 
+  // Version imprimable du grand bilan : les colonnes sont réparties sur plusieurs pages paysage
+  const GB_COLS_PER_PAGE = 26;
+  function buildGrandPrint() {
+    const box = document.getElementById('gbPrint'); if (!box) return;
+    const b = computeBilan();
+    const cols = b.list;
+    // Colonnes réparties à parts égales entre les pages (au plus 26 par page)
+    const per = Math.ceil(cols.length / Math.max(1, Math.ceil(cols.length / GB_COLS_PER_PAGE)));
+    const parts = [];
+    for (let i = 0; i < cols.length; i += per) parts.push(cols.slice(i, i + per));
+    if (!parts.length) { box.innerHTML = ''; return; }
+    box.innerHTML = parts.map((part, pi) => {
+      const last = pi === parts.length - 1;
+      const ps = b.perService.slice(pi * per, pi * per + part.length);
+      const foot = (label, key, total) => `<tr${key === 'total' ? ' class="gb-total"' : ''}><th class="gb-name">${label}</th>${ps.map((x) => `<td>${x[key]}</td>`).join('')}${last ? `<td class="gb-tot">${total}</td><td class="gb-tot" colspan="3"></td>` : ''}</tr>`;
+      return `<section class="gb-page">
+        <h2 style="font-size:14px;margin:0 0 2px">Grand bilan des présences · ${esc(b.per.title)}${parts.length > 1 ? ` · page ${pi + 1}/${parts.length}` : ''}</h2>
+        <p style="font-size:10px;margin:0 0 6px">TCO · ${esc(bilanSubtitle())} · P présent, A absent, E excusé (compté absent), case vide : rencontre qui ne concerne pas le membre.</p>
+        <table class="gb gbp"><thead><tr><th class="gb-name">Membre</th>${part.map((s) => `<th><span>${fmtDM(s.date)}</span><span class="gb-code">${CODE(s)}</span></th>`).join('')}${last ? '<th class="gb-tot">Prés.</th><th class="gb-tot">Abs.</th><th class="gb-tot">dont exc.</th><th class="gb-tot">Taux</th>' : ''}</tr></thead>
+        <tbody>${b.rows.map((r) => `<tr><th class="gb-name">${esc(fullName(r.m))}${r.m.actif === false ? ' (parti)' : ''}</th>${part.map((s) => { const c = gridCell(r.m, s); return `<td class="c${c}">${c}</td>`; }).join('')}${last ? `<td class="gb-tot">${r.st.P}</td><td class="gb-tot">${r.st.abs}</td><td class="gb-tot">${r.st.E}</td><td class="gb-tot">${pct(r.st.rate)}</td>` : ''}</tr>`).join('')}</tbody>
+        <tfoot>${foot('Membres présents', 'n', b.sumN)}${foot('Non enregistrés', 'v', b.sumV)}${foot('Enfants', 'e', b.sumE)}${foot('Total présents', 'total', b.sumTotal)}</tfoot></table>
+      </section>`;
+    }).join('');
+  }
+
+  /* ---------- Sauvegarde protégée par mot de passe (AES-GCM, clé dérivée par PBKDF2) ---------- */
+  const b64enc = (buf) => { const a = new Uint8Array(buf); let s = ''; for (let i = 0; i < a.length; i += 0x8000) s += String.fromCharCode.apply(null, a.subarray(i, i + 0x8000)); return btoa(s); };
+  const b64dec = (str) => { const s = atob(str); const a = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) a[i] = s.charCodeAt(i); return a; };
+  async function deriveKey(pw, salt) {
+    const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(pw), 'PBKDF2', false, ['deriveKey']);
+    return crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 200000, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  }
+  async function encryptBackup(obj, pw) {
+    const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await deriveKey(pw, salt), new TextEncoder().encode(JSON.stringify(obj)));
+    return JSON.stringify({ app: 'tco-presences', enc: 'aes-gcm-pbkdf2-v1', exportedAt: obj.exportedAt, salt: b64enc(salt), iv: b64enc(iv), data: b64enc(ct) });
+  }
+  async function decryptBackup(w, pw) {
+    try {
+      const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64dec(w.iv) }, await deriveKey(pw, b64dec(w.salt)), b64dec(w.data));
+      return JSON.parse(new TextDecoder().decode(pt));
+    } catch (e) { throw new Error('Mot de passe incorrect.'); }
+  }
+  // Contrôle d'une sauvegarde avant restauration : seules des données au bon format sont gardées
+  function cleanBackup(d) {
+    if (!d || d.app !== 'tco-presences' || !Array.isArray(d.members) || !Array.isArray(d.services)) throw new Error("Ce fichier n'est pas une sauvegarde TCO Présences valide.");
+    const okId = (x) => typeof x === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(x);
+    const okDate = (x) => typeof x === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(x);
+    d.members = d.members.filter((m) => m && okId(m.id) && typeof m.nom === 'string');
+    d.services = d.services.filter((s) => s && okId(s.id) && okDate(s.date));
+    d.photos = (d.photos || []).filter((p) => p && okId(p.memberId) && typeof p.data === 'string' && /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(p.data));
+    d.presences = (d.presences || []).filter((p) => p && okId(p.serviceId) && okId(p.memberId) && ['P', 'A', 'E'].includes(p.status) && p.id === `${p.serviceId}|${p.memberId}`);
+    d.alerts = (d.alerts || []).filter((a) => a && okId(a.id) && okId(a.memberId));
+    d.settings = (d.settings || []).filter((x) => x && typeof x.key === 'string').map((x) => (x.key === 'events'
+      ? { key: 'events', value: (Array.isArray(x.value) ? x.value : []).filter((ev) => ev && okId(ev.id) && Array.isArray(ev.days)).map((ev) => Object.assign({}, ev, { days: ev.days.filter((dd) => dd && okDate(dd.date)) })) }
+      : x));
+    return d;
+  }
+
+  function backupCard() {
+    const nM = DB.list('members').length, nS = services().length;
+    return `<section class="card" style="display:flex;flex-direction:column;gap:10px">
+          <h2>Sauvegarde des données</h2>
+          <p class="small muted" style="margin:0">Les données sont enregistrées sur ce téléphone uniquement (${nM} membre${nM > 1 ? 's' : ''}, ${nS} rencontre${nS > 1 ? 's' : ''}). Faites une sauvegarde chaque semaine et gardez-la en lieu sûr, ou utilisez-la pour transférer les données sur un autre téléphone.</p>
+          <form id="bkForm" style="display:flex;flex-direction:column;gap:10px" novalidate>
+            <div class="grid2">
+              <div class="field"><label for="bk-pw">Mot de passe</label><input id="bk-pw" type="password" autocomplete="new-password"></div>
+              <div class="field"><label for="bk-pw2">Confirmer</label><input id="bk-pw2" type="password" autocomplete="new-password"></div>
+            </div>
+            <span class="small muted">Au moins 6 caractères. La sauvegarde est chiffrée : sans ce mot de passe, personne ne peut l’ouvrir, pas même vous. Notez-le.</span>
+            <div id="bkerr" class="err" role="alert"></div>
+            <button class="btn ghost" type="submit">Créer une sauvegarde protégée</button>
+          </form>
+          <label class="btn ghost" style="margin:0">Restaurer une sauvegarde<input type="file" accept="application/json,.json" id="restore" hidden></label>
+          <div id="rbox" style="display:flex;flex-direction:column;gap:10px"></div>
+          <div id="rerr" class="err" role="alert"></div>
+          <p class="small muted" style="margin:0">Les exports Excel et PDF des bilans ne sont pas protégés : ne les partagez qu’avec les responsables.</p>
+        </section>`;
+  }
+
+  function bindBackupCard() {
+    document.getElementById('bkForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const a = document.getElementById('bk-pw').value, b = document.getElementById('bk-pw2').value;
+      const err = document.getElementById('bkerr');
+      if (a.length < 6) { err.textContent = 'Le mot de passe doit contenir au moins 6 caractères.'; return; }
+      if (a !== b) { err.textContent = 'Les deux mots de passe ne sont pas identiques.'; return; }
+      err.textContent = '';
+      toast('Préparation de la sauvegarde…');
+      saveText(`sauvegarde-tco-presences-${today()}.json`, 'application/json', await encryptBackup(DB.dump(), a));
+      document.getElementById('bk-pw').value = ''; document.getElementById('bk-pw2').value = '';
+    });
+    const rbox = document.getElementById('rbox'), rerr = document.getElementById('rerr');
+    // Étape finale : résumé et confirmation avant de remplacer les données
+    const confirmRestore = (data) => {
+      const when = data.exportedAt ? fmtDate(data.exportedAt.slice(0, 10), { day: 'numeric', month: 'long', year: 'numeric' }) : 'date inconnue';
+      const nM = DB.list('members').length, nS = services().length;
+      rbox.innerHTML = `<div class="banner warn"><strong>Remplacer toutes les données ?</strong><br>
+        Sauvegarde du ${esc(when)} : ${data.members.length} membres, ${data.services.length} rencontres.<br>
+        Elle remplacera les données actuelles de ce téléphone (${nM} membres, ${nS} rencontres), qui seront perdues.</div>
+        <div class="row"><button type="button" class="btn ghost sm" style="flex:1" id="r-cancel">Annuler</button>
+        <button type="button" class="btn danger sm" style="flex:1" id="r-ok">Remplacer les données</button></div>`;
+      document.getElementById('r-cancel').addEventListener('click', () => { rbox.innerHTML = ''; });
+      document.getElementById('r-ok').addEventListener('click', async () => {
+        await DB.restore(data);
+        setSecure(pinSet());
+        toast('Sauvegarde restaurée'); go('#/pointage');
+      });
+    };
+    document.getElementById('restore').addEventListener('change', (e) => {
+      const f = e.target.files[0]; if (!f) return;
+      e.target.value = '';
+      rbox.innerHTML = ''; rerr.textContent = '';
+      const fr = new FileReader();
+      fr.onload = () => {
+        const txt = String(fr.result || '').replace(/^﻿/, '').trim();
+        if (/^(Bilan de participation|Grand bilan)/.test(txt) || f.name.toLowerCase().endsWith('.csv')) {
+          rerr.textContent = "Ce fichier est un bilan (export Excel), pas une sauvegarde. Choisissez le fichier « sauvegarde-tco-presences-….json » (dossier Téléchargements › TCO Presences).";
+          return;
+        }
+        let w;
+        try { w = JSON.parse(txt); } catch (err) { rerr.textContent = "Ce fichier n'est pas une sauvegarde TCO Présences. Choisissez le fichier « sauvegarde-tco-presences-….json »."; return; }
+        if (w && w.app === 'tco-presences' && w.enc) {
+          rbox.innerHTML = `<div class="field"><label for="r-pw">Mot de passe de la sauvegarde</label><input id="r-pw" type="password" autocomplete="off"></div>
+            <button type="button" class="btn primary sm" id="r-open">Ouvrir la sauvegarde</button>`;
+          document.getElementById('r-pw').focus();
+          document.getElementById('r-open').addEventListener('click', async () => {
+            rerr.textContent = '';
+            try { confirmRestore(cleanBackup(await decryptBackup(w, document.getElementById('r-pw').value))); } catch (err) { rerr.textContent = err.message; }
+          });
+          return;
+        }
+        try { confirmRestore(cleanBackup(w)); } catch (err) { rerr.textContent = err.message; }
+      };
+      fr.readAsText(f);
+    });
+  }
+
   /* ================= RÉGLAGES ================= */
   function viewReglages() {
     const nM = DB.list('members').length, nS = services().length;
@@ -1264,14 +1431,8 @@
           <button class="btn primary" type="submit">Enregistrer</button>
         </form>
         ${pinCard()}
-        <section class="card" style="display:flex;flex-direction:column;gap:10px">
-          <h2>Sauvegarde des données</h2>
-          <p class="small muted" style="margin:0">Les données sont enregistrées sur ce téléphone uniquement (${nM} membre${nM > 1 ? 's' : ''}, ${nS} rencontre${nS > 1 ? 's' : ''}). Faites une sauvegarde chaque semaine et gardez-la en lieu sûr, ou utilisez-la pour transférer les données sur un autre téléphone.</p>
-          <button type="button" class="btn ghost" data-act="backup">Créer une sauvegarde</button>
-          <label class="btn ghost" style="margin:0">Restaurer une sauvegarde<input type="file" accept="application/json,.json" id="restore" hidden></label>
-          <div id="rerr" class="err" role="alert"></div>
-        </section>
-        <p class="small muted" style="text-align:center">TCO Présences · version 2.0</p>
+        ${backupCard()}
+        <p class="small muted" style="text-align:center">TCO Présences · version 2.1</p>
       </div>`;
     document.getElementById('sform').addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -1280,23 +1441,7 @@
       toast('Réglages enregistrés');
     });
     bindPinCard();
-    document.getElementById('restore').addEventListener('change', (e) => {
-      const f = e.target.files[0]; if (!f) return;
-      const fr = new FileReader();
-      fr.onload = async () => {
-        const txt = String(fr.result || '').replace(/^\uFEFF/, '').trim();
-        if (/^Bilan de participation/.test(txt) || f.name.toLowerCase().endsWith('.csv')) {
-          document.getElementById('rerr').textContent = "Ce fichier est un bilan (export Excel), pas une sauvegarde. Choisissez le fichier « sauvegarde-tco-presences-….json » (dossier Téléchargements › TCO Presences).";
-          return;
-        }
-        try {
-          const data = JSON.parse(txt);
-          await DB.restore(data);
-          toast('Sauvegarde restaurée'); go('#/pointage');
-        } catch (err) { document.getElementById('rerr').textContent = err instanceof SyntaxError ? "Ce fichier n'est pas une sauvegarde TCO Présences. Choisissez le fichier « sauvegarde-tco-presences-….json »." : 'Restauration impossible : ' + err.message; }
-      };
-      fr.readAsText(f);
-    });
+    bindBackupCard();
   }
 
   /* ================= CODE D'ACCÈS ================= */
@@ -1308,7 +1453,7 @@
   }
   const pinSet = () => !!DB.setting('pinHash', null);
   const pinOk = async (pin) => (await sha(DB.setting('pinSalt', '') + pin)) === DB.setting('pinHash', '');
-  let locked = false, hiddenAt = 0, fails = 0, waitUntil = 0;
+  let locked = false, hiddenAt = 0;
 
   async function setPin(pin) {
     const salt = uid();
@@ -1316,9 +1461,11 @@
     await DB.setSetting('pinSalt', salt);
     await DB.setSetting('pinHash', await sha(salt + pin));
     await DB.setSetting('recoveryHash', await sha(salt + 'R' + rec));
+    await DB.setSetting('pinFails', 0); await DB.setSetting('pinWaitUntil', 0);
+    setSecure(true);
     return rec.slice(0, 4) + '-' + rec.slice(4);
   }
-  async function clearPin() { for (const k of ['pinHash', 'pinSalt', 'recoveryHash']) await DB.setSetting(k, null); }
+  async function clearPin() { for (const k of ['pinHash', 'pinSalt', 'recoveryHash', 'pinWaitUntil']) await DB.setSetting(k, null); await DB.setSetting('pinFails', 0); setSecure(false); }
 
   function showLock(after) {
     locked = true;
@@ -1346,13 +1493,20 @@
     document.getElementById('lockForm').addEventListener('submit', async (e) => {
       e.preventDefault();
       const err = document.getElementById('lockErr');
-      if (Date.now() < waitUntil) { err.textContent = `Trop d’essais. Réessayez dans ${Math.ceil((waitUntil - Date.now()) / 1000)} secondes.`; return; }
-      if (!(await pinOk(pin.value))) {
-        fails++; pin.value = '';
-        if (fails >= 5) { waitUntil = Date.now() + 30000; fails = 0; }
-        err.textContent = 'Code incorrect.'; return;
+      const waitUntil = Number(DB.setting('pinWaitUntil', 0)) || 0;
+      if (Date.now() < waitUntil) {
+        const sec = Math.ceil((waitUntil - Date.now()) / 1000);
+        err.textContent = `Trop d’essais. Réessayez dans ${sec > 90 ? Math.ceil(sec / 60) + ' minutes' : sec + ' secondes'}.`; return;
       }
-      fails = 0; unlock(after);
+      if (!(await pinOk(pin.value))) {
+        const fails = (Number(DB.setting('pinFails', 0)) || 0) + 1; pin.value = '';
+        await DB.setSetting('pinFails', fails);
+        // Attente qui double à chaque série de 5 erreurs : 30 s, 1 min, 2 min… jusqu'à 1 heure
+        if (fails % 5 === 0) await DB.setSetting('pinWaitUntil', Date.now() + Math.min(3600, 30 * 2 ** (fails / 5 - 1)) * 1000);
+        err.textContent = fails % 5 === 0 ? 'Code incorrect. Trop d’essais : patientez avant de réessayer.' : `Code incorrect. Encore ${5 - (fails % 5)} essai(s) avant une attente.`; return;
+      }
+      await DB.setSetting('pinFails', 0); await DB.setSetting('pinWaitUntil', 0);
+      unlock(after);
     });
     document.getElementById('lockForgot').addEventListener('click', () => { document.getElementById('recForm').hidden = false; document.getElementById('recCode').focus(); });
     document.getElementById('recForm').addEventListener('submit', async (e) => {
@@ -1370,6 +1524,7 @@
     if (after) after();
   }
   document.addEventListener('visibilitychange', () => {
+    if (!ready) return;
     if (document.hidden) hiddenAt = Date.now();
     else if (!locked && hiddenAt && Date.now() - hiddenAt > 5 * 60 * 1000 && pinSet()) showLock();
   });
@@ -1458,7 +1613,7 @@
         await refreshAlerts();
         ui.delArmed = null; ui.lastClose = null; toast('Rencontre supprimée'); go('#/historique'); break;
       }
-      case 'gb-pdf': printPage('Grand bilan TCO', true); break;
+      case 'gb-pdf': buildGrandPrint(); printPage('Grand bilan TCO', true); break;
       case 'gb-csv': exportGrandCsv(); break;
       case 'ev-edit': ui.evEdit = el.dataset.ev; render(); window.scrollTo(0, 0); break;
       case 'ev-cancel': ui.evEdit = null; render(); break;
@@ -1488,7 +1643,6 @@
       case 'mculte': ui.mCulte = el.dataset.k; drawMembres(); break;
       case 'csv': exportCsv(); break;
       case 'pdf': printPage('Bilan TCO', false); break;
-      case 'backup': saveText(`sauvegarde-tco-presences-${today()}.json`, 'application/json', JSON.stringify(DB.dump())); break;
       case 'leave-arm': ui.leaveArmed = el.dataset.id; render(); break;
       case 'leave-cancel': ui.leaveArmed = false; render(); break;
       case 'leave-confirm': {
@@ -1514,9 +1668,9 @@
     const inp = e.target.closest && e.target.closest('input[data-cnt]');
     if (inp) saveCount(inp.dataset.cnt, inp.value);
   });
-  window.addEventListener('hashchange', () => { ui.closeArmed = false; ui.leaveArmed = false; ui.dupOk = false; ui.delArmed = null; render(); window.scrollTo(0, 0); });
+  window.addEventListener('hashchange', () => { if (!ready) return; ui.closeArmed = false; ui.leaveArmed = false; ui.dupOk = false; ui.delArmed = null; render(); window.scrollTo(0, 0); });
 
-  DB.init().then(() => { if (pinSet()) showLock(render); else render(); }).catch((err) => {
+  DB.init().then(() => { ready = true; setSecure(pinSet()); if (pinSet()) showLock(render); else render(); }).catch((err) => {
     $app.innerHTML = `<div class="wrap"><div class="banner warn">Impossible d'ouvrir les données : ${esc(err.message)}</div></div>`;
   });
 })();

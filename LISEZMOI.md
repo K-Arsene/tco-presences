@@ -45,7 +45,7 @@ Règles appliquées :
 
 ## Important : données et sauvegarde
 - Les données sont enregistrées **sur un seul téléphone**. Si deux responsables pointent sur deux téléphones différents, leurs listes ne se rejoignent pas. Pour la première version, il faut donc **un téléphone de pointage** pour le service d'accueil.
-- Faire une **sauvegarde chaque semaine** (Réglages › Créer une sauvegarde) et l'envoyer sur un autre support (WhatsApp, Drive). Elle permet aussi de passer les données sur un nouveau téléphone (Réglages › Restaurer).
+- Faire une **sauvegarde chaque semaine** (Réglages › Créer une sauvegarde protégée, avec un mot de passe à ne pas perdre) et l'envoyer sur un autre support (WhatsApp, Drive). Elle permet aussi de passer les données sur un nouveau téléphone (Réglages › Restaurer).
 - Désinstaller l'application efface les données. Sauvegarder d'abord.
 
 ## Version suivante (à prévoir)
@@ -56,6 +56,15 @@ L'APK est signé avec une clé permanente. Elle est stockée chiffrée dans `sig
 Garder ce mot de passe en lieu sûr. Sans lui, les prochaines versions ne pourront plus s'installer par-dessus l'ancienne.
 
 ## Historique
+- 2.1 (sécurité et fiabilité) :
+  - avertissement si la même rencontre est ouverte deux fois le même jour ; pas de rencontre à une date future ;
+  - restauration avec résumé et confirmation ; sauvegarde contrôlée avant restauration ;
+  - sauvegarde chiffrée par mot de passe (AES-256) ;
+  - grand bilan imprimé sur plusieurs pages paysage (année complète lisible) ;
+  - code d'accès : essais mémorisés, attente croissante ; aperçu masqué dans les applications récentes ;
+  - plus de copie automatique des données vers le compte Google ;
+  - numéro de téléphone vérifié ; exports Excel protégés contre les formules ;
+  - changement de type d'une rencontre clôturée : pointage rouvert pour vérification.
 - 2.0 :
   - bouton SMS réparé ; l'appel ouvre le clavier avec le numéro ;
   - une absence excusée compte comme absence dans les statistiques, sans déclencher de rappel ;
