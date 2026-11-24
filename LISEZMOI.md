@@ -56,6 +56,10 @@ L'APK est signé avec une clé permanente. Elle est stockée chiffrée dans `sig
 Garder ce mot de passe en lieu sûr. Sans lui, les prochaines versions ne pourront plus s'installer par-dessus l'ancienne.
 
 ## Historique
+- 1.7 :
+  - rencontres du soir : enseignement le mercredi, prière le vendredi, avec les membres des deux cultes réunis ;
+  - journées spéciales sur plusieurs jours (date de début et de fin, heures par jour), avec un pointage chaque jour ;
+  - bilans séparés pour chaque type de rencontre.
 - 1.6 :
   - deux cultes le dimanche (français, puis Jula Moré) et des cultes communs (Noël, journées AEC, JADE…) ;
   - chaque membre a son culte d'appartenance, et le pointage n'affiche que les membres du culte ouvert (tous pour un culte commun) ;

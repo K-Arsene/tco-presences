@@ -26,7 +26,16 @@
   const CULTES = { fr: 'Culte en français', jm: 'Culte Jula Moré', commun: 'Culte commun' };
   const CULTE_SHORT = { fr: 'Français', jm: 'Jula Moré' };
   const svcA = (s) => s.assemblee || 'commun';
-  const svcName = (s) => s.assemblee ? CULTES[s.assemblee] + (s.label ? ' · ' + s.label : '') : (s.label || TYPES[s.type] || 'Culte');
+  // Rencontres : culte (dimanche/commun), enseignement du mercredi soir, prière du vendredi soir, journées spéciales
+  const KINDS = { culte: 'Cultes', enseignement: 'Enseignement du mercredi soir', priere: 'Prière du vendredi soir', activite: 'Journées spéciales' };
+  const svcKind = (s) => s.kind || 'culte';
+  const svcName = (s) => {
+    const k = svcKind(s);
+    if (k === 'activite') return s.label || 'Journée spéciale';
+    if (k !== 'culte') return KINDS[k] + (s.label ? ' · ' + s.label : '');
+    return s.assemblee ? CULTES[s.assemblee] + (s.label ? ' · ' + s.label : '') : (s.label || TYPES[s.type] || 'Culte');
+  };
+  const timeRange = (s) => s.time ? (s.timeEnd ? `${s.time}–${s.timeEnd}` : s.time) : '';
   // Le membre appartient-il à ce culte ? (culte commun = tout le monde)
   const strictBelongs = (m, s) => svcA(s) === 'commun' || m.culte === svcA(s);
   // Affiché au pointage : son culte, ou partout tant que son culte n'est pas précisé
@@ -81,7 +90,8 @@
     if (a < s.date) return true;
     return pointed;
   };
-  const countedClosed = () => services().filter((s) => s.closed && s.counted);
+  // Cultes comptés : bilans des cultes, règle des 2 absences, fiche membre
+  const countedClosed = () => services().filter((s) => s.closed && s.counted && svcKind(s) === 'culte');
 
   function lastCountedStatus(m, beforeService) {
     const list = countedClosed().filter((s) => eligible(m, s) && (!beforeService || svcKey(s) < svcKey(beforeService)));
@@ -169,12 +179,12 @@
 
   function render() {
     const r = route();
-    const tab = { pointage: 'pointage', nouveau: 'pointage', reglages: 'pointage', rappels: 'rappels', membres: 'membres', membre: 'membres', modifier: 'membres', bilans: 'bilans' }[r.name] || 'pointage';
+    const tab = { pointage: 'pointage', nouveau: 'pointage', reglages: 'pointage', rappels: 'rappels', membres: 'membres', membre: 'membres', modifier: 'membres', bilans: 'bilans', journees: 'pointage' }[r.name] || 'pointage';
     document.querySelectorAll('#tabbar a').forEach((a) => {
       if (a.dataset.tab === tab) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
     });
     updateBadge();
-    const views = { pointage: viewPointage, rappels: viewRappels, membres: viewMembres, membre: viewFiche, nouveau: viewForm, modifier: viewForm, bilans: viewBilans, reglages: viewReglages };
+    const views = { pointage: viewPointage, rappels: viewRappels, membres: viewMembres, membre: viewFiche, nouveau: viewForm, modifier: viewForm, bilans: viewBilans, reglages: viewReglages, journees: viewJournees };
     (views[r.name] || viewPointage)(r);
   }
 
@@ -186,9 +196,9 @@
       <header class="head">
         <div class="row between">${KICKER}
           <a class="iconbtn noprint" href="#/reglages" aria-label="Réglages" style="color:#fff">${ICON.gear}</a></div>
-        <h1>Pointage du culte</h1>
-        <div class="sub">${esc(cap(fmtDate(s.date)))}${s.time ? ' · ' + esc(s.time.replace(':', ' h ')) : ''}</div>
-        <div class="sub small">${esc(svcName(s))}${svcA(s) === 'commun' ? ' · tous les membres' : ''}${s.counted ? '' : ' · non compté dans les bilans'}</div>
+        <h1>${svcKind(s) === 'culte' ? 'Pointage du culte' : 'Pointage'}</h1>
+        <div class="sub">${esc(cap(fmtDate(s.date)))}${s.time ? ' · ' + esc(timeRange(s)) : ''}</div>
+        <div class="sub small">${esc(svcName(s))}${svcA(s) === 'commun' ? ' · tous les membres' : ''}${svcKind(s) === 'culte' && !s.counted ? ' · non compté dans les bilans' : ''}</div>
         <div class="pills" id="pcounts"></div>
       </header>
       <div class="wrap" style="padding-bottom:4px">
@@ -273,7 +283,7 @@
     }
     if (writes.length) await DB.putMany('presences', writes);
     let newAlerts = 0;
-    if (s.counted) {
+    if (s.counted && svcKind(s) === 'culte') {
       const open = new Set(openAlerts().map((a) => a.memberId));
       const prevServices = countedClosed().filter((x) => svcKey(x) < svcKey(s));
       for (const m of absents) {
@@ -290,7 +300,7 @@
     }
     await DB.put('services', Object.assign({}, s, { closed: true, closedAt: new Date().toISOString() }));
     ui.closeArmed = false; ui.q = ''; ui.filter = 'all';
-    ui.lastClose = { serviceId: s.id, absents: absents.length, presents: members.filter((m) => (presence(s.id, m.id) || {}).status === 'P').length, alerts: newAlerts };
+    ui.lastClose = { serviceId: s.id, absents: absents.length, presents: members.filter((m) => (presence(s.id, m.id) || {}).status === 'P').length, alerts: newAlerts, culte: svcKind(s) === 'culte' };
     render();
   }
 
@@ -298,67 +308,188 @@
     const lc = ui.lastClose;
     const recent = services().filter((s) => s.closed).slice(-6).reverse();
     const d = new Date();
+    const dow = d.getDay();
+    // Mercredi soir : enseignement · vendredi soir : prière · sinon culte
+    const defK = dow === 3 ? 'enseignement' : dow === 5 ? 'priere' : 'culte';
     // Après le culte en français, on propose d'enchaîner avec le culte Jula Moré
-    const doneToday = services().filter((x) => x.date === today()).map(svcA);
+    const doneToday = services().filter((x) => x.date === today() && svcKind(x) === 'culte').map(svcA);
     const defA = doneToday.includes('fr') && !doneToday.includes('jm') ? 'jm' : 'fr';
+    const upcoming = events().filter((ev) => ev.days.some((x) => !dayService(ev, x.date)));
     $app.innerHTML = `
       <header class="head">
         <div class="row between">${KICKER}
           <a class="iconbtn" href="#/reglages" aria-label="Réglages" style="color:#fff">${ICON.gear}</a></div>
-        <h1>Pointage du culte</h1>
-        <div class="sub">Aucun culte ouvert</div>
+        <h1>Pointage</h1>
+        <div class="sub">Aucune rencontre ouverte</div>
       </header>
       <div class="wrap">
-        ${lc ? `<div class="banner warn" role="status"><strong>Culte clôturé.</strong> ${lc.presents} présent${lc.presents > 1 ? 's' : ''}, ${lc.absents} absent${lc.absents > 1 ? 's' : ''}.
-          ${lc.alerts ? ` ${lc.alerts} rappel${lc.alerts > 1 ? 's' : ''} créé${lc.alerts > 1 ? 's' : ''} (2 absences successives). <a href="#/rappels"><strong>Voir les rappels</strong></a>` : ' Aucun nouveau rappel.'}</div>` : ''}
+        ${lc ? `<div class="banner warn" role="status"><strong>Pointage clôturé.</strong> ${lc.presents} présent${lc.presents > 1 ? 's' : ''}, ${lc.absents} absent${lc.absents > 1 ? 's' : ''}.
+          ${lc.alerts ? ` ${lc.alerts} rappel${lc.alerts > 1 ? 's' : ''} créé${lc.alerts > 1 ? 's' : ''} (2 absences successives). <a href="#/rappels"><strong>Voir les rappels</strong></a>` : lc.culte ? ' Aucun nouveau rappel.' : ''}</div>` : ''}
+        ${upcoming.length ? `<section class="card" style="display:flex;flex-direction:column;gap:8px"><h2>Journées spéciales</h2>
+          ${upcoming.map((ev) => {
+            const next = ev.days.find((x) => !dayService(ev, x.date));
+            const i = ev.days.indexOf(next) + 1;
+            return `<div class="row between" style="padding:8px 0;border-top:1px solid #EFEDE7;gap:10px">
+              <div style="min-width:0"><div style="font-weight:700">${esc(ev.name)}</div>
+              <div class="small muted">Jour ${i}/${ev.days.length} · ${esc(cap(fmtDate(next.date, { weekday: 'short', day: 'numeric', month: 'short' })))} · ${esc(next.start)}–${esc(next.end)}</div></div>
+              <button type="button" class="btn primary sm" data-act="open-day" data-ev="${ev.id}" data-date="${next.date}">Pointer</button></div>`;
+          }).join('')}</section>` : ''}
         <form class="card" id="openForm" style="display:flex;flex-direction:column;gap:12px">
-          <h2>Ouvrir un culte</h2>
-          <div class="grid2">
-            <div class="field"><label for="sdate">Date</label><input id="sdate" type="date" value="${today()}" required></div>
-            <div class="field"><label for="stime">Heure</label><input id="stime" type="time" value="${pad(d.getHours())}:00"></div>
-          </div>
-          <div class="field"><span class="lbl">Quel culte ?</span>
+          <h2>Ouvrir une rencontre</h2>
+          <div class="field"><span class="lbl">Type de rencontre</span>
+            <div class="seg" role="group" aria-label="Type de rencontre" id="skind">
+              <button type="button" data-k="culte">Culte</button>
+              <button type="button" data-k="enseignement">Enseignement</button>
+              <button type="button" data-k="priere">Prière</button>
+            </div></div>
+          <div class="field" id="sculte"><span class="lbl">Quel culte ?</span>
             <div class="seg" role="group" aria-label="Quel culte" id="stype">
               <button type="button" data-t="fr" aria-pressed="${defA === 'fr'}">Français</button>
               <button type="button" data-t="jm" aria-pressed="${defA === 'jm'}">Jula Moré</button>
               <button type="button" data-t="commun" aria-pressed="false">Commun</button>
-            </div>
-            <span class="small muted" id="stypehelp" style="margin-top:4px"></span></div>
-          <div class="field"><label for="slabel">Intitulé (facultatif)</label><input id="slabel" type="text" placeholder="Ex. : 1er culte, veillée de prière"></div>
-          <label class="row" style="color:var(--ink);font-size:15px;font-weight:600;margin:0;min-height:44px">
+            </div></div>
+          <span class="small muted" id="stypehelp"></span>
+          <div class="field"><label for="sdate">Date</label><input id="sdate" type="date" value="${today()}" required></div>
+          <div class="grid2">
+            <div class="field"><label for="stime">Heure de début</label><input id="stime" type="time" value="${pad(d.getHours())}:00"></div>
+            <div class="field"><label for="send">Heure de fin</label><input id="send" type="time"></div>
+          </div>
+          <div class="field"><label for="slabel">Intitulé (facultatif)</label><input id="slabel" type="text"></div>
+          <label class="row" id="scountedrow" style="color:var(--ink);font-size:15px;font-weight:600;margin:0;min-height:44px">
             <input id="scounted" type="checkbox" checked style="width:22px;height:22px">
             Compter ce culte (bilans et règle des 2 absences)</label>
           <button class="btn primary block" type="submit">Ouvrir le pointage</button>
         </form>
-        ${recent.length ? `<section class="card"><h2 style="margin-bottom:8px">Derniers cultes</h2>
+        <a class="btn ghost block" href="#/journees">${ICON.plus}Programmer des journées spéciales</a>
+        ${recent.length ? `<section class="card"><h2 style="margin-bottom:8px">Dernières rencontres</h2>
           ${recent.map((s) => {
             const pr = DB.list('presences').filter((p) => p.serviceId === s.id);
             const nP = pr.filter((p) => p.status === 'P').length;
             return `<div class="row between" style="padding:8px 0;border-top:1px solid #EFEDE7">
-              <div><div style="font-weight:700">${esc(cap(fmtDate(s.date, { weekday: 'short', day: 'numeric', month: 'short' })))}${s.time ? ' · ' + esc(s.time) : ''}</div>
-              <div class="small muted">${esc(svcName(s))} · ${nP} présent${nP > 1 ? 's' : ''}${s.counted ? '' : ' · non compté'}</div></div>
+              <div><div style="font-weight:700">${esc(cap(fmtDate(s.date, { weekday: 'short', day: 'numeric', month: 'short' })))}${s.time ? ' · ' + esc(timeRange(s)) : ''}</div>
+              <div class="small muted">${esc(svcName(s))} · ${nP} présent${nP > 1 ? 's' : ''}${svcKind(s) === 'culte' && !s.counted ? ' · non compté' : ''}</div></div>
               <button type="button" class="btn ghost sm" data-act="reopen" data-id="${s.id}">Corriger</button></div>`;
           }).join('')}</section>` : ''}
       </div>`;
+    const kindBtns = document.querySelectorAll('#skind button');
     const typeBtns = document.querySelectorAll('#stype button');
+    let kind = defK, assemblee = defA;
     const HELP = { fr: 'Seuls les membres du culte en français apparaissent au pointage.', jm: 'Seuls les membres du culte Jula Moré apparaissent au pointage.',
-      commun: 'Tous les membres apparaissent : Noël, journée de l’AEC, journée de la JADE…' };
-    const setType = (t) => {
-      typeBtns.forEach((x) => x.setAttribute('aria-pressed', x.dataset.t === t));
-      document.getElementById('stypehelp').textContent = HELP[t];
-      document.getElementById('slabel').placeholder = t === 'commun' ? 'Ex. : Noël, journée de l’AEC, journée de la JADE' : 'Ex. : 1er culte, veillée de prière';
+      commun: 'Tous les membres apparaissent : Noël, journée de l’AEC, journée de la JADE…',
+      enseignement: 'Enseignement du mercredi soir : les membres des deux cultes sont réunis.',
+      priere: 'Prière du vendredi soir : les membres des deux cultes sont réunis.' };
+    const refresh = () => {
+      kindBtns.forEach((x) => x.setAttribute('aria-pressed', x.dataset.k === kind));
+      typeBtns.forEach((x) => x.setAttribute('aria-pressed', x.dataset.t === assemblee));
+      const isCulte = kind === 'culte';
+      document.getElementById('sculte').hidden = !isCulte;
+      document.getElementById('scountedrow').hidden = !isCulte;
+      document.getElementById('stypehelp').textContent = HELP[isCulte ? assemblee : kind];
+      document.getElementById('slabel').placeholder = !isCulte ? 'Ex. : thème de la soirée' : assemblee === 'commun' ? 'Ex. : Noël, journée de l’AEC, journée de la JADE' : 'Ex. : 1er culte';
     };
-    typeBtns.forEach((b) => b.addEventListener('click', () => setType(b.dataset.t)));
-    setType(defA);
+    kindBtns.forEach((b) => b.addEventListener('click', () => { kind = b.dataset.k; refresh(); }));
+    typeBtns.forEach((b) => b.addEventListener('click', () => { assemblee = b.dataset.t; refresh(); }));
+    refresh();
     document.getElementById('openForm').addEventListener('submit', async (e) => {
       e.preventDefault();
       const date = document.getElementById('sdate').value || today();
-      const assemblee = (document.querySelector('#stype [aria-pressed="true"]') || {}).dataset?.t || 'fr';
-      await DB.put('services', { id: uid(), date, time: document.getElementById('stime').value, assemblee, type: assemblee === 'commun' ? 'special' : 'dimanche',
-        label: document.getElementById('slabel').value.trim(), counted: document.getElementById('scounted').checked, closed: false });
+      const isCulte = kind === 'culte';
+      await DB.put('services', { id: uid(), date, time: document.getElementById('stime').value, timeEnd: document.getElementById('send').value,
+        kind, assemblee: isCulte ? assemblee : 'commun', type: isCulte ? (assemblee === 'commun' ? 'special' : 'dimanche') : 'semaine',
+        label: document.getElementById('slabel').value.trim(), counted: isCulte ? document.getElementById('scounted').checked : false, closed: false });
       ui.lastClose = null; ui.q = ''; ui.filter = 'all';
       render();
     });
+  }
+
+  /* ================= JOURNÉES SPÉCIALES ================= */
+  // Activités sur plusieurs jours (ex. 3 jours de prière de la JADE) : chaque jour a ses heures et son pointage ; tous les membres sont réunis.
+  const EV_TYPES = { enseignement: 'Enseignement', priere: 'Prière', autre: 'Autre' };
+  function events() { return (DB.setting('events', []) || []).slice().sort((a, b) => a.start.localeCompare(b.start)); }
+  function dayService(ev, date) { return services().find((s) => s.eventId === ev.id && s.date === date) || null; }
+  function datesBetween(a, b) {
+    const out = []; const d = parseDate(a), end = parseDate(b);
+    while (d <= end && out.length < 31) { out.push(isoDate(d)); d.setDate(d.getDate() + 1); }
+    return out;
+  }
+
+  function viewJournees() {
+    const list = events().slice().reverse();
+    $app.innerHTML = `
+      <div class="bar"><a class="iconbtn" href="#/pointage" aria-label="Retour">${ICON.back}</a><h1>Journées spéciales</h1></div>
+      <div class="wrap">
+        <form class="card" id="evForm" style="display:flex;flex-direction:column;gap:12px" novalidate>
+          <h2>Programmer des journées</h2>
+          <p class="small muted" style="margin:0">Ex. : 3 jours d’enseignement ou de prière de la JADE. Les membres des deux cultes sont réunis.</p>
+          <div class="field"><label for="ev-name">Nom de l’activité <span class="req">*</span></label><input id="ev-name" type="text" placeholder="Ex. : 3 jours de prière de la JADE"></div>
+          <div class="field"><span class="lbl">Type</span><div class="seg" role="group" aria-label="Type d’activité" id="ev-type">
+            <button type="button" data-t="enseignement" aria-pressed="false">Enseignement</button>
+            <button type="button" data-t="priere" aria-pressed="true">Prière</button>
+            <button type="button" data-t="autre" aria-pressed="false">Autre</button></div></div>
+          <div class="grid2">
+            <div class="field"><label for="ev-start">Date de début <span class="req">*</span></label><input id="ev-start" type="date" value="${today()}"></div>
+            <div class="field"><label for="ev-end">Date de fin <span class="req">*</span></label><input id="ev-end" type="date" value="${today()}"></div>
+          </div>
+          <div class="grid2">
+            <div class="field"><label for="ev-h1">Heure de début</label><input id="ev-h1" type="time" value="18:00"></div>
+            <div class="field"><label for="ev-h2">Heure de fin</label><input id="ev-h2" type="time" value="21:00"></div>
+          </div>
+          <span class="small muted">Ces heures s’appliquent à tous les jours. Vous pouvez ensuite les changer jour par jour ci-dessous.</span>
+          <div id="ev-days" style="display:flex;flex-direction:column;gap:8px"></div>
+          <div id="ev-err" class="err" role="alert"></div>
+          <button class="btn primary block" type="submit">Enregistrer les journées</button>
+        </form>
+        ${list.length ? `<section class="card" style="display:flex;flex-direction:column;gap:6px"><h2 style="margin-bottom:4px">Journées programmées</h2>
+          ${list.map((ev) => `<div style="padding:10px 0;border-top:1px solid #EFEDE7;display:flex;flex-direction:column;gap:6px">
+            <div class="row between"><div><div style="font-weight:700">${esc(ev.name)}</div><div class="small muted">${esc(EV_TYPES[ev.type] || '')} · ${ev.days.length} jour${ev.days.length > 1 ? 's' : ''}</div></div>
+            ${ev.days.some((x) => dayService(ev, x.date)) ? '' : `<button type="button" class="linkbtn" data-act="ev-del" data-ev="${ev.id}">Supprimer</button>`}</div>
+            ${ev.days.map((x, i) => {
+              const sv = dayService(ev, x.date);
+              const nP = sv ? DB.list('presences').filter((p) => p.serviceId === sv.id && p.status === 'P').length : 0;
+              return `<div class="row between small" style="gap:8px"><span>Jour ${i + 1} · ${esc(cap(fmtDate(x.date, { weekday: 'short', day: 'numeric', month: 'short' })))} · ${esc(x.start)}–${esc(x.end)}</span>
+                ${sv ? `<span class="tag ${sv.closed ? 'ok' : 'warn'}">${sv.closed ? nP + ' présent' + (nP > 1 ? 's' : '') : 'en cours'}</span>`
+                     : `<button type="button" class="btn ghost sm" data-act="open-day" data-ev="${ev.id}" data-date="${x.date}">Pointer</button>`}</div>`;
+            }).join('')}</div>`).join('')}</section>` : ''}
+      </div>`;
+    const form = document.getElementById('evForm');
+    let evType = 'priere';
+    const typeBtns = form.querySelectorAll('#ev-type button');
+    typeBtns.forEach((b) => b.addEventListener('click', () => { evType = b.dataset.t; typeBtns.forEach((x) => x.setAttribute('aria-pressed', x === b)); }));
+    const drawDays = () => {
+      const a = form.querySelector('#ev-start').value, z = form.querySelector('#ev-end').value;
+      const h1 = form.querySelector('#ev-h1').value, h2 = form.querySelector('#ev-h2').value;
+      const box = form.querySelector('#ev-days');
+      if (!a || !z || z < a) { box.innerHTML = ''; return; }
+      box.innerHTML = datesBetween(a, z).map((dt, i) => `<div class="day" data-date="${dt}" style="background:#F6F5F1;border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;gap:6px">
+        <div style="font-weight:700;font-size:15px">Jour ${i + 1} · ${esc(cap(fmtDate(dt, { weekday: 'long', day: 'numeric', month: 'long' })))}</div>
+        <div class="grid2"><div class="field"><label for="d1-${dt}">Début</label><input id="d1-${dt}" class="d1" type="time" value="${h1}"></div>
+        <div class="field"><label for="d2-${dt}">Fin</label><input id="d2-${dt}" class="d2" type="time" value="${h2}"></div></div></div>`).join('');
+    };
+    ['#ev-start', '#ev-end', '#ev-h1', '#ev-h2'].forEach((sel) => form.querySelector(sel).addEventListener('change', drawDays));
+    drawDays();
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const err = form.querySelector('#ev-err');
+      const name = form.querySelector('#ev-name').value.trim();
+      const a = form.querySelector('#ev-start').value, z = form.querySelector('#ev-end').value;
+      if (!name) { err.textContent = 'Indiquez le nom de l’activité.'; return; }
+      if (!a || !z || z < a) { err.textContent = 'La date de fin doit être le même jour ou après la date de début.'; return; }
+      if (datesBetween(a, z).length > 30) { err.textContent = '30 jours au maximum.'; return; }
+      const days = [...form.querySelectorAll('#ev-days .day')].map((el) => ({ date: el.dataset.date, start: el.querySelector('.d1').value, end: el.querySelector('.d2').value }));
+      if (days.some((x) => !x.start || !x.end)) { err.textContent = 'Indiquez l’heure de début et de fin de chaque jour.'; return; }
+      await DB.setSetting('events', (DB.setting('events', []) || []).concat([{ id: uid(), name, type: evType, start: a, end: z, days }]));
+      toast('Journées enregistrées'); render(); window.scrollTo(0, 0);
+    });
+  }
+
+  async function openEventDay(evId, date) {
+    if (openService()) { toast("Clôturez d'abord la rencontre en cours"); return; }
+    const ev = events().find((x) => x.id === evId); if (!ev) return;
+    const i = ev.days.findIndex((x) => x.date === date); const day = ev.days[i];
+    await DB.put('services', { id: uid(), date, time: day.start, timeEnd: day.end, kind: 'activite', eventId: ev.id, eventType: ev.type,
+      assemblee: 'commun', type: 'special', label: `${ev.name} · jour ${i + 1}/${ev.days.length}`, counted: false, closed: false });
+    ui.lastClose = null; ui.q = ''; ui.filter = 'all';
+    go('#/pointage');
   }
 
   /* ================= MEMBRES ================= */
@@ -439,6 +570,7 @@
           <div class="row between"><h3>Participation aux cultes</h3><a href="#/bilans" class="small" style="font-weight:600">Voir les bilans</a></div>
           <div>${cap(MONTHS[now.getMonth()])} : <strong>${ms.P} culte${ms.P > 1 ? 's' : ''} sur ${ms.denom}</strong> (${pct(ms.rate)})${ms.E ? ` · ${ms.E} excusé${ms.E > 1 ? 's' : ''}` : ''}</div>
           <div class="small muted">Année ${now.getFullYear()} : ${yearStats.P} sur ${yearStats.denom} (${pct(yearStats.rate)})</div>
+          ${['enseignement', 'priere'].map((k) => { const st = memberStats(m, services().filter((x) => x.closed && svcKind(x) === k && x.date.startsWith(String(now.getFullYear())))); return st.denom || st.E ? `<div class="small muted">${k === 'enseignement' ? 'Enseignements (mercredi)' : 'Prières (vendredi)'} ${now.getFullYear()} : ${st.P} sur ${st.denom} (${pct(st.rate)})</div>` : ''; }).join('')}
           ${last6.length ? `<div class="dots" role="list" aria-label="Derniers cultes comptés">${last6.map((s) => {
             const st = (presence(s.id, m.id) || { status: 'A' }).status;
             return `<div role="listitem"><div class="dot ${st}" aria-label="${{ P: 'présent', A: 'absent', E: 'excusé' }[st]}">${st}</div><span class="small muted">${esc(fmtShort(s.date))}</span></div>`;
@@ -671,7 +803,9 @@
   const inCulte = (s) => (ui.bCulte || 'all') === 'all' || svcA(s) === 'commun' || svcA(s) === ui.bCulte;
 
   function periodServices(months) {
-    return countedClosed().filter((s) => months.includes(s.date.slice(0, 7)) && inCulte(s));
+    const k = ui.bKind || 'culte';
+    const base = k === 'culte' ? countedClosed().filter(inCulte) : services().filter((s) => s.closed && svcKind(s) === k);
+    return base.filter((s) => months.includes(s.date.slice(0, 7)));
   }
 
   function computeBilan() {
@@ -701,13 +835,16 @@
     if (!ui.bQuarter) ui.bQuarter = quarterOf(ym);
     if (!ui.bYear) ui.bYear = String(now.getFullYear());
     if (!ui.bCulte) ui.bCulte = 'all';
+    if (!ui.bKind) ui.bKind = 'culte';
+    const isCulte = ui.bKind === 'culte';
     const svMonths = services().map((s) => s.date.slice(0, 7));
     const months = [...new Set([ym, ...svMonths])].sort().reverse();
     const quarters = [...new Set([quarterOf(ym), ...svMonths.map(quarterOf)])].sort().reverse();
     const years = [...new Set([String(now.getFullYear()), ...svMonths.map((x) => x.slice(0, 4))])].sort().reverse();
     const seuil = Number(DB.setting('seuil', 50)) / 100;
     const b = computeBilan();
-    const culteTitle = ui.bCulte === 'all' ? 'Tous les cultes' : CULTES[ui.bCulte] + ' (cultes communs inclus)';
+    const culteTitle = isCulte ? (ui.bCulte === 'all' ? 'Tous les cultes' : CULTES[ui.bCulte] + ' (cultes communs inclus)')
+      : `${KINDS[ui.bKind]} · ${ui.bCulte === 'all' ? 'tous les membres' : 'membres du ' + CULTES[ui.bCulte].toLowerCase()}`;
     const low = b.rows.filter((r) => r.st.rate != null && r.st.rate < seuil).sort((x, y) => x.st.rate - y.st.rate);
     const maxN = Math.max(1, ...b.perService.map((x) => x.n));
 
@@ -719,12 +856,13 @@
     const groupCard = (title, entries) => `<section class="card"><h3 style="margin-bottom:4px">${title}</h3><dl class="dl">${entries.map(([k, v]) => `<div><dt>${esc(k)} (${v.n})</dt><dd>${pct(v.D ? v.P / v.D : null)}</dd></div>`).join('') || '<div><dt>—</dt><dd></dd></div>'}</dl></section>`;
 
     let extra = '';
-    if (ui.bMode === 'month') {
-      extra = `<section class="card" style="display:flex;flex-direction:column;gap:12px">
-        <h3>Présents par culte</h3>
+    const perCard = `<section class="card" style="display:flex;flex-direction:column;gap:12px">
+        <h3>Présents par rencontre</h3>
         ${b.perService.length ? b.perService.map((x) => `<div><div class="row between small" style="font-size:14px"><span>${esc(cap(fmtDate(x.s.date, { weekday: 'short', day: 'numeric', month: 'short' })))} · ${esc(svcName(x.s))}</span><strong>${x.n}</strong></div>
-          <div class="hbar" style="margin-top:4px"><i style="width:${Math.round(x.n / maxN * 100)}%"></i></div></div>`).join('') : '<div class="small muted">Aucun culte compté et clôturé sur cette période.</div>'}
+          <div class="hbar" style="margin-top:4px"><i style="width:${Math.round(x.n / maxN * 100)}%"></i></div></div>`).join('') : '<div class="small muted">Aucune rencontre clôturée sur cette période.</div>'}
       </section>`;
+    if (ui.bMode === 'month') {
+      extra = perCard;
     } else {
       const n = b.byMonth.length;
       const dist = { reg: 0, occ: 0, dec: 0 };
@@ -738,6 +876,7 @@
         </section>
         <section class="card"><h3 style="margin-bottom:4px">Répartition des membres</h3>
           <dl class="dl"><div><dt>Réguliers (80 % et plus)</dt><dd>${dist.reg}</dd></div><div><dt>Occasionnels (50 à 79 %)</dt><dd>${dist.occ}</dd></div><div><dt>Décrochés (moins de 50 %)</dt><dd>${dist.dec}</dd></div></dl></section>
+        ${ui.bKind === 'activite' ? perCard : ''}
         ${ui.bCulte === 'all' ? groupCard('Par culte', group((m) => m.culte ? CULTES[m.culte] : '')) : ''}
         ${groupCard('Par zone', group((m) => m.zone))}
         ${groupCard('Par sexe', group((m) => m.sexe))}`;
@@ -763,15 +902,18 @@
           <button type="button" data-act="bculte" data-k="fr" aria-pressed="${ui.bCulte === 'fr'}">Français</button>
           <button type="button" data-act="bculte" data-k="jm" aria-pressed="${ui.bCulte === 'jm'}">Jula Moré</button>
         </div>
-        <div class="noprint" style="margin-top:8px">${sel}</div>
+        <div class="noprint grid2" style="margin-top:8px">
+          <div class="field"><label for="bkind">Rencontres</label><select id="bkind">${Object.entries(KINDS).map(([k, l]) => `<option value="${k}" ${k === ui.bKind ? 'selected' : ''}>${k === 'culte' ? 'Cultes' : k === 'enseignement' ? 'Enseignements (mer.)' : k === 'priere' ? 'Prières (ven.)' : l}</option>`).join('')}</select></div>
+          <div class="field">${sel}</div>
+        </div>
       </header>
       <div class="wrap">
         <div><h2 style="font-size:20px">${esc(b.per.title)}</h2><div class="small muted">${esc(culteTitle)}</div></div>
         <div class="grid2">
-          <div class="tile"><b>${b.list.length}</b><span>cultes comptés</span></div>
+          <div class="tile"><b>${b.list.length}</b><span>${isCulte ? 'cultes comptés' : 'rencontres pointées'}</span></div>
           <div class="tile"><b>${pct(b.rate)}</b><span>taux de participation</span></div>
           <div class="tile"><b>${b.avg}</b><span>présents en moyenne par culte</span></div>
-          <div class="tile"><b>${b.alerts.length}</b><span>rappels d'absence créés</span></div>
+          ${isCulte ? `<div class="tile"><b>${b.alerts.length}</b><span>rappels d'absence créés</span></div>` : `<div class="tile"><b>${b.rows.length}</b><span>membres concernés</span></div>`}
         </div>
         ${extra}
         <section class="card" style="display:flex;flex-direction:column;gap:6px">
@@ -788,6 +930,7 @@
       </div>
       <div class="foot"><button type="button" class="btn dark" style="flex:1" data-act="pdf">Exporter en PDF</button>
         <button type="button" class="btn ghost" style="flex:1;border-color:var(--ink);color:var(--ink)" data-act="csv">Exporter en Excel</button></div>`;
+    document.getElementById('bkind').addEventListener('change', (e) => { ui.bKind = e.target.value; render(); });
     document.getElementById('bper').addEventListener('change', (e) => {
       if (ui.bMode === 'month') ui.bMonth = e.target.value; else if (ui.bMode === 'quarter') ui.bQuarter = e.target.value; else ui.bYear = e.target.value;
       render();
@@ -796,16 +939,17 @@
 
   function exportCsv() {
     const b = computeBilan();
-    const culte = ui.bCulte === 'all' ? 'Tous les cultes' : CULTES[ui.bCulte];
-    const rows = [['Bilan de participation aux cultes — TCO', b.per.title, culte], [],
+    const culte = ui.bCulte === 'all' ? 'Tous les membres' : CULTES[ui.bCulte];
+    const rows = [['Bilan de participation — TCO', KINDS[ui.bKind || 'culte'], b.per.title, culte], [],
       ['Nom', 'Prénoms', 'Culte', 'Sexe', 'Zone', 'Statut', "Baptisé(e) d'eau", 'Présences', 'Absences', 'Excusé', 'Cultes comptés', 'Taux (%)']];
     for (const r of b.rows.sort((x, y) => norm(x.m.nom + x.m.prenoms).localeCompare(norm(y.m.nom + y.m.prenoms)))) {
       rows.push([r.m.nom, r.m.prenoms, r.m.culte ? CULTE_SHORT[r.m.culte] : 'À préciser', r.m.sexe, r.m.zone, r.m.statut, r.m.baptise, r.st.P, r.st.A, r.st.E, r.st.denom, r.st.rate == null ? '' : Math.round(r.st.rate * 100)]);
     }
-    rows.push([], ['Culte', 'Date', 'Présents']);
+    rows.push([], ['Rencontre', 'Date', 'Présents']);
     for (const x of b.perService) rows.push([svcName(x.s), x.s.date, x.n]);
     const suffix = ui.bCulte === 'all' ? '' : '-' + (ui.bCulte === 'fr' ? 'francais' : 'jula-more');
-    saveText(`bilan-presences-${b.per.key}${suffix}.csv`, 'text/csv', toCsv(rows));
+    const kindSuffix = (ui.bKind || 'culte') === 'culte' ? '' : '-' + ui.bKind;
+    saveText(`bilan-presences-${b.per.key}${kindSuffix}${suffix}.csv`, 'text/csv', toCsv(rows));
   }
 
   /* ================= RÉGLAGES ================= */
@@ -828,7 +972,7 @@
           <label class="btn ghost" style="margin:0">Restaurer une sauvegarde<input type="file" accept="application/json,.json" id="restore" hidden></label>
           <div id="rerr" class="err" role="alert"></div>
         </section>
-        <p class="small muted" style="text-align:center">TCO Présences · version 1.6</p>
+        <p class="small muted" style="text-align:center">TCO Présences · version 1.7</p>
       </div>`;
     document.getElementById('sform').addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -891,6 +1035,11 @@
       case 'kind': ui.kind = el.dataset.k; el.parentElement.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', b === el)); break;
       case 'bmode': ui.bMode = el.dataset.k; render(); break;
       case 'bculte': ui.bCulte = el.dataset.k; render(); break;
+      case 'open-day': await openEventDay(el.dataset.ev, el.dataset.date); break;
+      case 'ev-del': {
+        await DB.setSetting('events', (DB.setting('events', []) || []).filter((x) => x.id !== el.dataset.ev));
+        toast('Journées supprimées'); render(); break;
+      }
       case 'mculte': ui.mCulte = el.dataset.k; drawMembres(); break;
       case 'csv': exportCsv(); break;
       case 'pdf': printPage('Bilan TCO'); break;
