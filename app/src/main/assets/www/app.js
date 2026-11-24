@@ -22,6 +22,15 @@
   const fullName = (m) => `${m.prenoms} ${m.nom}`.trim();
   const initials = (m) => ((m.prenoms || ' ')[0] + (m.nom || ' ')[0]).toUpperCase().trim();
   const TYPES = { dimanche: 'Culte du dimanche', semaine: 'Culte de semaine', special: 'Culte spécial' };
+  // Deux assemblées le dimanche (français puis Jula Moré) et des cultes communs (Noël, journées AEC, JADE…)
+  const CULTES = { fr: 'Culte en français', jm: 'Culte Jula Moré', commun: 'Culte commun' };
+  const CULTE_SHORT = { fr: 'Français', jm: 'Jula Moré' };
+  const svcA = (s) => s.assemblee || 'commun';
+  const svcName = (s) => s.assemblee ? CULTES[s.assemblee] + (s.label ? ' · ' + s.label : '') : (s.label || TYPES[s.type] || 'Culte');
+  // Le membre appartient-il à ce culte ? (culte commun = tout le monde)
+  const strictBelongs = (m, s) => svcA(s) === 'commun' || m.culte === svcA(s);
+  // Affiché au pointage : son culte, ou partout tant que son culte n'est pas précisé
+  const belongs = (m, s) => strictBelongs(m, s) || !m.culte;
 
   const ICON = {
     check: '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"/></svg>',
@@ -60,14 +69,17 @@
   // Un membre n'est compté (présent ou absent) qu'à partir de sa date d'arrivée à l'église.
   const arrival = (m) => m.dateArrivee || m.createdAt || '0000';
   // Visible au pointage dès le jour de son arrivée…
-  const listable = (m, s) => arrival(m) <= s.date;
+  const listable = (m, s) => arrival(m) <= s.date && belongs(m, s);
   // …mais compté dans les statistiques à partir des cultes suivants. Le jour même ne compte que s'il a été pointé (présent ou excusé).
+  // Un membre n'est compté que pour les cultes de son assemblée et les cultes communs.
   const eligible = (m, s) => {
     const a = arrival(m);
-    if (a < s.date) return true;
     if (a > s.date) return false;
     const p = DB.get('presences', `${s.id}|${m.id}`);
-    return !!p && (p.status === 'P' || p.status === 'E');
+    const pointed = !!p && (p.status === 'P' || p.status === 'E');
+    if (!strictBelongs(m, s)) return !m.culte && pointed;
+    if (a < s.date) return true;
+    return pointed;
   };
   const countedClosed = () => services().filter((s) => s.closed && s.counted);
 
@@ -176,7 +188,7 @@
           <a class="iconbtn noprint" href="#/reglages" aria-label="Réglages" style="color:#fff">${ICON.gear}</a></div>
         <h1>Pointage du culte</h1>
         <div class="sub">${esc(cap(fmtDate(s.date)))}${s.time ? ' · ' + esc(s.time.replace(':', ' h ')) : ''}</div>
-        <div class="sub small">${esc(s.label || TYPES[s.type])}${s.counted ? '' : ' · non compté dans les bilans'}</div>
+        <div class="sub small">${esc(svcName(s))}${svcA(s) === 'commun' ? ' · tous les membres' : ''}${s.counted ? '' : ' · non compté dans les bilans'}</div>
         <div class="pills" id="pcounts"></div>
       </header>
       <div class="wrap" style="padding-bottom:4px">
@@ -200,6 +212,7 @@
     const nP = members.filter((m) => st(m) === 'P').length;
     const nE = members.filter((m) => st(m) === 'E').length;
     const nRest = members.length - nP - nE;
+    const nAbs = members.filter((m) => !st(m) && strictBelongs(m, s)).length;
     document.getElementById('pcounts').innerHTML =
       `<span class="pill">${nP} présent${nP > 1 ? 's' : ''}</span><span class="pill outline">${nRest} non pointé${nRest > 1 ? 's' : ''}</span>${nE ? `<span class="pill outline">${nE} excusé${nE > 1 ? 's' : ''}</span>` : ''}`;
     const filters = [['all', 'Tous'], ['out', 'Non pointés'], ['in', 'Présents'], ['exc', 'Excusés']];
@@ -220,7 +233,7 @@
       list.innerHTML = shown.map((m) => {
         const x = st(m);
         const prev = s.counted ? lastCountedStatus(m, s) : null;
-        const info = [m.zone ? 'Zone ' + esc(m.zone) : '', prev === 'A' ? '<span class="tag warn">absent au culte précédent</span>' : ''].filter(Boolean).join(' · ');
+        const info = [svcA(s) === 'commun' && m.culte ? esc(CULTE_SHORT[m.culte]) : '', m.zone ? 'Zone ' + esc(m.zone) : '', !m.culte ? '<span class="tag grey">culte à préciser</span>' : '', prev === 'A' ? '<span class="tag warn">absent au culte précédent</span>' : ''].filter(Boolean).join(' · ');
         const main = x === 'P'
           ? `<button type="button" class="btn primary sm" data-act="mark" data-id="${m.id}" aria-pressed="true" aria-label="Retirer ${esc(fullName(m))} des présents">${ICON.check}Présent</button>`
           : x === 'E'
@@ -237,7 +250,7 @@
     const foot = document.getElementById('pfoot');
     foot.innerHTML = ui.closeArmed
       ? `<button type="button" class="btn ghost" style="flex:1" data-act="close-cancel">Annuler</button>
-         <button type="button" class="btn dark" style="flex:2" data-act="close-confirm">Confirmer : ${nRest} absent${nRest > 1 ? 's' : ''}</button>`
+         <button type="button" class="btn dark" style="flex:2" data-act="close-confirm">Confirmer : ${nAbs} absent${nAbs > 1 ? 's' : ''}</button>`
       : `<button type="button" class="btn dark block" data-act="close-arm">Clôturer le culte</button>`;
   }
 
@@ -254,6 +267,7 @@
     const writes = [];
     for (const m of members) {
       const p = presence(s.id, m.id);
+      if (!strictBelongs(m, s)) continue; // culte à préciser : jamais compté absent ailleurs que chez lui
       if (!p) writes.push({ id: `${s.id}|${m.id}`, serviceId: s.id, memberId: m.id, status: 'A', at: new Date().toISOString() });
       if (!p || p.status === 'A') absents.push(m);
     }
@@ -276,7 +290,7 @@
     }
     await DB.put('services', Object.assign({}, s, { closed: true, closedAt: new Date().toISOString() }));
     ui.closeArmed = false; ui.q = ''; ui.filter = 'all';
-    ui.lastClose = { serviceId: s.id, absents: absents.length, presents: members.length - absents.length - members.filter((m) => (presence(s.id, m.id) || {}).status === 'E').length, alerts: newAlerts };
+    ui.lastClose = { serviceId: s.id, absents: absents.length, presents: members.filter((m) => (presence(s.id, m.id) || {}).status === 'P').length, alerts: newAlerts };
     render();
   }
 
@@ -284,7 +298,9 @@
     const lc = ui.lastClose;
     const recent = services().filter((s) => s.closed).slice(-6).reverse();
     const d = new Date();
-    const isSunday = d.getDay() === 0;
+    // Après le culte en français, on propose d'enchaîner avec le culte Jula Moré
+    const doneToday = services().filter((x) => x.date === today()).map(svcA);
+    const defA = doneToday.includes('fr') && !doneToday.includes('jm') ? 'jm' : 'fr';
     $app.innerHTML = `
       <header class="head">
         <div class="row between">${KICKER}
@@ -301,15 +317,16 @@
             <div class="field"><label for="sdate">Date</label><input id="sdate" type="date" value="${today()}" required></div>
             <div class="field"><label for="stime">Heure</label><input id="stime" type="time" value="${pad(d.getHours())}:00"></div>
           </div>
-          <div class="field"><span class="lbl">Type de culte</span>
-            <div class="seg" role="group" aria-label="Type de culte" id="stype">
-              <button type="button" data-t="dimanche" aria-pressed="${isSunday}">Dimanche</button>
-              <button type="button" data-t="semaine" aria-pressed="${!isSunday}">Semaine</button>
-              <button type="button" data-t="special" aria-pressed="false">Spécial</button>
-            </div></div>
+          <div class="field"><span class="lbl">Quel culte ?</span>
+            <div class="seg" role="group" aria-label="Quel culte" id="stype">
+              <button type="button" data-t="fr" aria-pressed="${defA === 'fr'}">Français</button>
+              <button type="button" data-t="jm" aria-pressed="${defA === 'jm'}">Jula Moré</button>
+              <button type="button" data-t="commun" aria-pressed="false">Commun</button>
+            </div>
+            <span class="small muted" id="stypehelp" style="margin-top:4px"></span></div>
           <div class="field"><label for="slabel">Intitulé (facultatif)</label><input id="slabel" type="text" placeholder="Ex. : 1er culte, veillée de prière"></div>
           <label class="row" style="color:var(--ink);font-size:15px;font-weight:600;margin:0;min-height:44px">
-            <input id="scounted" type="checkbox" ${isSunday ? 'checked' : ''} style="width:22px;height:22px">
+            <input id="scounted" type="checkbox" checked style="width:22px;height:22px">
             Compter ce culte (bilans et règle des 2 absences)</label>
           <button class="btn primary block" type="submit">Ouvrir le pointage</button>
         </form>
@@ -319,20 +336,25 @@
             const nP = pr.filter((p) => p.status === 'P').length;
             return `<div class="row between" style="padding:8px 0;border-top:1px solid #EFEDE7">
               <div><div style="font-weight:700">${esc(cap(fmtDate(s.date, { weekday: 'short', day: 'numeric', month: 'short' })))}${s.time ? ' · ' + esc(s.time) : ''}</div>
-              <div class="small muted">${esc(s.label || TYPES[s.type])} · ${nP} présent${nP > 1 ? 's' : ''}${s.counted ? '' : ' · non compté'}</div></div>
+              <div class="small muted">${esc(svcName(s))} · ${nP} présent${nP > 1 ? 's' : ''}${s.counted ? '' : ' · non compté'}</div></div>
               <button type="button" class="btn ghost sm" data-act="reopen" data-id="${s.id}">Corriger</button></div>`;
           }).join('')}</section>` : ''}
       </div>`;
     const typeBtns = document.querySelectorAll('#stype button');
-    typeBtns.forEach((b) => b.addEventListener('click', () => {
-      typeBtns.forEach((x) => x.setAttribute('aria-pressed', x === b));
-      document.getElementById('scounted').checked = b.dataset.t === 'dimanche';
-    }));
+    const HELP = { fr: 'Seuls les membres du culte en français apparaissent au pointage.', jm: 'Seuls les membres du culte Jula Moré apparaissent au pointage.',
+      commun: 'Tous les membres apparaissent : Noël, journée de l’AEC, journée de la JADE…' };
+    const setType = (t) => {
+      typeBtns.forEach((x) => x.setAttribute('aria-pressed', x.dataset.t === t));
+      document.getElementById('stypehelp').textContent = HELP[t];
+      document.getElementById('slabel').placeholder = t === 'commun' ? 'Ex. : Noël, journée de l’AEC, journée de la JADE' : 'Ex. : 1er culte, veillée de prière';
+    };
+    typeBtns.forEach((b) => b.addEventListener('click', () => setType(b.dataset.t)));
+    setType(defA);
     document.getElementById('openForm').addEventListener('submit', async (e) => {
       e.preventDefault();
       const date = document.getElementById('sdate').value || today();
-      const type = (document.querySelector('#stype [aria-pressed="true"]') || {}).dataset?.t || 'dimanche';
-      await DB.put('services', { id: uid(), date, time: document.getElementById('stime').value, type,
+      const assemblee = (document.querySelector('#stype [aria-pressed="true"]') || {}).dataset?.t || 'fr';
+      await DB.put('services', { id: uid(), date, time: document.getElementById('stime').value, assemblee, type: assemblee === 'commun' ? 'special' : 'dimanche',
         label: document.getElementById('slabel').value.trim(), counted: document.getElementById('scounted').checked, closed: false });
       ui.lastClose = null; ui.q = ''; ui.filter = 'all';
       render();
@@ -351,6 +373,7 @@
       <div class="wrap">
         <label for="mq" style="margin:0">Rechercher</label>
         <input id="mq" type="search" placeholder="Nom, prénom, téléphone, zone" value="${esc(ui.mq)}" autocomplete="off">
+        <div class="seg" role="group" aria-label="Filtrer par culte" id="mfilters"></div>
         <ul class="list" id="mlist"></ul>
       </div>`;
     document.getElementById('mq').addEventListener('input', (e) => { ui.mq = e.target.value; drawMembres(); });
@@ -358,12 +381,18 @@
   }
   function drawMembres() {
     const q = norm(ui.mq);
-    const list = activeMembers().filter((m) => !q || norm([m.nom, m.prenoms, m.tel, m.zone, m.quartier].join(' ')).includes(q));
+    const all = activeMembers();
+    const f = ui.mCulte || 'all';
+    const opts = [['all', `Tous (${all.length})`], ['fr', `Français (${all.filter((m) => m.culte === 'fr').length})`], ['jm', `Jula Moré (${all.filter((m) => m.culte === 'jm').length})`]];
+    const nNone = all.filter((m) => !m.culte).length;
+    if (nNone) opts.push(['none', `À préciser (${nNone})`]);
+    document.getElementById('mfilters').innerHTML = opts.map(([k, l]) => `<button type="button" data-act="mculte" data-k="${k}" aria-pressed="${f === k}" style="font-size:14px">${l}</button>`).join('');
+    const list = all.filter((m) => (f === 'all' || (f === 'none' ? !m.culte : m.culte === f)) && (!q || norm([m.nom, m.prenoms, m.tel, m.zone, m.quartier].join(' ')).includes(q)));
     document.getElementById('mlist').innerHTML = list.length ? list.map((m) => `
       <li><a class="mrow" href="#/membre/${m.id}" style="text-decoration:none;color:inherit">
         ${photoHtml(m, 56)}
         <span class="who"><span class="name">${esc(fullName(m))}</span>
-        <span class="info">${esc([m.statut, m.zone ? 'Zone ' + m.zone : ''].filter(Boolean).join(' · '))}</span></span>
+        <span class="info">${esc([m.culte ? CULTE_SHORT[m.culte] : 'Culte à préciser', m.statut, m.zone ? 'Zone ' + m.zone : ''].filter(Boolean).join(' · '))}</span></span>
       </a></li>`).join('') : `<li class="empty">${activeMembers().length ? 'Aucun membre ne correspond.' : 'Aucun membre enregistré pour le moment.'}</li>`;
   }
 
@@ -379,6 +408,7 @@
     const alerts = DB.list('alerts').filter((a) => a.memberId === m.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     const bapt = m.baptise === 'oui' ? `Oui${m.dateBapteme ? ' · ' + esc(fmtDate(m.dateBapteme, { day: 'numeric', month: 'long', year: 'numeric' })) : ''}` : m.baptise === 'non' ? 'Non' : '—';
     const rowsInfo = [
+      ['Culte', m.culte ? esc(CULTES[m.culte]) : '<span class="low">À préciser</span>'],
       ['Téléphone', m.tel ? `<a href="tel:${esc(m.tel)}">${esc(m.tel)}</a>` : '—'],
       ['Sexe', esc(m.sexe || '—')],
       ['Quartier · zone', esc([m.quartier, m.zone ? 'Zone ' + m.zone : ''].filter(Boolean).join(' · ') || '—')],
@@ -468,6 +498,7 @@
           </div>
         </fieldset>
         <fieldset><legend>Église et foi</legend>
+          <div class="field"><span class="lbl">Culte d'appartenance <span class="req">*</span></span>${seg('culte', [['fr', 'Culte en français'], ['jm', 'Culte Jula Moré']], m.culte || (!editing && fromPointage && svcA(openService()) !== 'commun' ? svcA(openService()) : ''))}</div>
           <div class="field"><label for="f-arrivee">Date d'arrivée à l'église <span class="req">*</span></label><input id="f-arrivee" name="dateArrivee" type="date" value="${esc(editing ? arrival(m) : fromPointage ? openService().date : today())}" max="${today()}">
             <span class="small muted" style="margin-top:4px">Présences et absences sont comptées à partir de cette date seulement.</span></div>
           <div class="field"><label for="f-prov">Église de provenance</label><input id="f-prov" name="provenance" type="text" placeholder="Nom de l'église, ville" value="${esc(m.provenance)}"></div>
@@ -519,6 +550,7 @@
       if (!fd.tel) missing.push('le téléphone');
       if (!fd.baptise) missing.push("le baptême d'eau");
       if (!fd.dateArrivee) missing.push("la date d'arrivée");
+      if (!fd.culte) missing.push("le culte d'appartenance");
       const errBox = document.getElementById('ferr');
       if (missing.length) { errBox.textContent = 'À compléter : ' + missing.join(', ') + '.'; errBox.scrollIntoView({ block: 'center' }); return; }
       if (fd.baptise !== 'oui') fd.dateBapteme = '';
@@ -597,7 +629,7 @@
         ${photoHtml(m, 56)}
         <a class="who" href="#/membre/${m.id}" style="flex:1;min-width:0;display:flex;flex-direction:column;gap:3px;text-decoration:none;color:inherit">
           <span style="font-size:17px;font-weight:700">${esc(fullName(m))}</span>
-          <span class="small muted">${esc([m.zone ? 'Zone ' + m.zone : '', tel].filter(Boolean).join(' · '))}</span>
+          <span class="small muted">${esc([m.culte ? CULTE_SHORT[m.culte] : '', m.zone ? 'Zone ' + m.zone : '', tel].filter(Boolean).join(' · '))}</span>
           ${open ? `<span class="tag warn">Absent les ${esc(a.dates.map(fmtShort).join(' et '))}</span>`
                  : `<span class="tag ok">Traité · ${esc(a.kind)} le ${esc(fmtShort(a.doneAt))}</span>`}
         </a>
@@ -619,22 +651,46 @@
   }
 
   /* ================= BILANS ================= */
-  function periodServices() {
-    const list = countedClosed();
-    if (ui.bMode === 'month') return list.filter((s) => s.date.startsWith(ui.bMonth));
-    return list.filter((s) => s.date.startsWith(ui.bYear));
+  // Périodes : mensuel, trimestriel, annuel — filtrables par culte (tous, français, Jula Moré)
+  const QNAMES = ['1er trimestre', '2e trimestre', '3e trimestre', '4e trimestre'];
+  const QMONTHS = ['janv.–mars', 'avr.–juin', 'juil.–sept.', 'oct.–déc.'];
+  const quarterOf = (ym) => `${ym.slice(0, 4)}-T${Math.floor((Number(ym.slice(5, 7)) - 1) / 3) + 1}`;
+
+  function period() {
+    if (ui.bMode === 'month') {
+      return { months: [ui.bMonth], key: ui.bMonth, title: `${cap(MONTHS[Number(ui.bMonth.slice(5)) - 1])} ${ui.bMonth.slice(0, 4)}` };
+    }
+    if (ui.bMode === 'quarter') {
+      const y = ui.bQuarter.slice(0, 4), q = Number(ui.bQuarter.slice(-1));
+      return { months: [0, 1, 2].map((i) => `${y}-${pad((q - 1) * 3 + i + 1)}`), key: ui.bQuarter, title: `${QNAMES[q - 1]} ${y} (${QMONTHS[q - 1]})` };
+    }
+    return { months: MONTHS.map((_, i) => `${ui.bYear}-${pad(i + 1)}`), key: ui.bYear, title: `Année ${ui.bYear}` };
+  }
+
+  const bMembers = () => activeMembers().filter((m) => (ui.bCulte || 'all') === 'all' || m.culte === ui.bCulte);
+  const inCulte = (s) => (ui.bCulte || 'all') === 'all' || svcA(s) === 'commun' || svcA(s) === ui.bCulte;
+
+  function periodServices(months) {
+    return countedClosed().filter((s) => months.includes(s.date.slice(0, 7)) && inCulte(s));
   }
 
   function computeBilan() {
-    const list = periodServices();
-    const members = activeMembers();
+    const per = period();
+    const list = periodServices(per.months);
+    const members = bMembers();
+    const ids = new Set(members.map((m) => m.id));
     const rows = members.map((m) => ({ m, st: memberStats(m, list) })).filter((r) => r.st.P + r.st.A + r.st.E > 0);
     const sumP = rows.reduce((t, r) => t + r.st.P, 0);
     const sumD = rows.reduce((t, r) => t + r.st.denom, 0);
-    const perService = list.map((s) => ({ s, n: DB.list('presences').filter((p) => p.serviceId === s.id && p.status === 'P').length }));
-    const prefix = ui.bMode === 'month' ? ui.bMonth : ui.bYear;
-    const alerts = DB.list('alerts').filter((a) => a.createdAt.startsWith(prefix));
-    return { list, rows, rate: sumD ? sumP / sumD : null, perService, alerts,
+    const perService = list.map((s) => ({ s, n: DB.list('presences').filter((p) => p.serviceId === s.id && p.status === 'P' && ids.has(p.memberId)).length }));
+    const alerts = DB.list('alerts').filter((a) => per.months.includes(a.createdAt.slice(0, 7)) && ids.has(a.memberId));
+    const byMonth = per.months.map((ym) => {
+      const sv = list.filter((s) => s.date.startsWith(ym));
+      let P = 0, D = 0;
+      for (const r of rows) { const st = memberStats(r.m, sv); P += st.P; D += st.denom; }
+      return { ym, rate: D ? P / D : null, n: sv.length };
+    });
+    return { per, list, rows, rate: sumD ? sumP / sumD : null, perService, alerts, byMonth,
       avg: perService.length ? Math.round(perService.reduce((t, x) => t + x.n, 0) / perService.length) : 0 };
   }
 
@@ -642,63 +698,75 @@
     const now = new Date();
     const ym = `${now.getFullYear()}-${pad(now.getMonth() + 1)}`;
     if (!ui.bMonth) ui.bMonth = ym;
+    if (!ui.bQuarter) ui.bQuarter = quarterOf(ym);
     if (!ui.bYear) ui.bYear = String(now.getFullYear());
-    const months = [...new Set([ym, ...services().map((s) => s.date.slice(0, 7))])].sort().reverse();
-    const years = [...new Set([String(now.getFullYear()), ...services().map((s) => s.date.slice(0, 4))])].sort().reverse();
+    if (!ui.bCulte) ui.bCulte = 'all';
+    const svMonths = services().map((s) => s.date.slice(0, 7));
+    const months = [...new Set([ym, ...svMonths])].sort().reverse();
+    const quarters = [...new Set([quarterOf(ym), ...svMonths.map(quarterOf)])].sort().reverse();
+    const years = [...new Set([String(now.getFullYear()), ...svMonths.map((x) => x.slice(0, 4))])].sort().reverse();
     const seuil = Number(DB.setting('seuil', 50)) / 100;
     const b = computeBilan();
-    const title = ui.bMode === 'month' ? `${cap(MONTHS[Number(ui.bMonth.slice(5)) - 1])} ${ui.bMonth.slice(0, 4)}` : `Année ${ui.bYear}`;
+    const culteTitle = ui.bCulte === 'all' ? 'Tous les cultes' : CULTES[ui.bCulte] + ' (cultes communs inclus)';
     const low = b.rows.filter((r) => r.st.rate != null && r.st.rate < seuil).sort((x, y) => x.st.rate - y.st.rate);
     const maxN = Math.max(1, ...b.perService.map((x) => x.n));
+
+    const group = (keyFn) => {
+      const g = {};
+      for (const r of b.rows) { const k = keyFn(r.m) || 'Non renseigné'; g[k] = g[k] || { P: 0, D: 0, n: 0 }; g[k].P += r.st.P; g[k].D += r.st.denom; g[k].n++; }
+      return Object.entries(g).sort((a, c) => a[0].localeCompare(c[0]));
+    };
+    const groupCard = (title, entries) => `<section class="card"><h3 style="margin-bottom:4px">${title}</h3><dl class="dl">${entries.map(([k, v]) => `<div><dt>${esc(k)} (${v.n})</dt><dd>${pct(v.D ? v.P / v.D : null)}</dd></div>`).join('') || '<div><dt>—</dt><dd></dd></div>'}</dl></section>`;
 
     let extra = '';
     if (ui.bMode === 'month') {
       extra = `<section class="card" style="display:flex;flex-direction:column;gap:12px">
         <h3>Présents par culte</h3>
-        ${b.perService.length ? b.perService.map((x) => `<div><div class="row between small" style="font-size:14px"><span>${esc(cap(fmtDate(x.s.date, { weekday: 'long', day: 'numeric', month: 'short' })))}${x.s.label ? ' · ' + esc(x.s.label) : ''}</span><strong>${x.n}</strong></div>
+        ${b.perService.length ? b.perService.map((x) => `<div><div class="row between small" style="font-size:14px"><span>${esc(cap(fmtDate(x.s.date, { weekday: 'short', day: 'numeric', month: 'short' })))} · ${esc(svcName(x.s))}</span><strong>${x.n}</strong></div>
           <div class="hbar" style="margin-top:4px"><i style="width:${Math.round(x.n / maxN * 100)}%"></i></div></div>`).join('') : '<div class="small muted">Aucun culte compté et clôturé sur cette période.</div>'}
       </section>`;
     } else {
-      const byMonth = MONTHS.map((_, i) => {
-        const pre = `${ui.bYear}-${pad(i + 1)}`;
-        const sv = b.list.filter((s) => s.date.startsWith(pre));
-        let P = 0, D = 0;
-        for (const r of b.rows) { const st = memberStats(r.m, sv); P += st.P; D += st.denom; }
-        return D ? P / D : null;
-      });
+      const n = b.byMonth.length;
       const dist = { reg: 0, occ: 0, dec: 0 };
       for (const r of b.rows) { if (r.st.rate == null) continue; if (r.st.rate >= 0.8) dist.reg++; else if (r.st.rate >= 0.5) dist.occ++; else dist.dec++; }
-      const group = (key) => {
-        const g = {};
-        for (const r of b.rows) { const k = r.m[key] || 'Non renseigné'; g[k] = g[k] || { P: 0, D: 0, n: 0 }; g[k].P += r.st.P; g[k].D += r.st.denom; g[k].n++; }
-        return Object.entries(g).sort((a, c) => a[0].localeCompare(c[0]));
-      };
+      const colStyle = `grid-template-columns:repeat(${n},minmax(0,1fr))`;
+      const lab = (x) => n === 12 ? MONTH_INI[Number(x.ym.slice(5)) - 1] : cap(MONTHS[Number(x.ym.slice(5)) - 1]);
       extra = `<section class="card" style="display:flex;flex-direction:column;gap:10px">
           <h3>Taux de participation par mois</h3>
-          <div class="cols">${byMonth.map((v) => `<div><span>${v == null ? '' : Math.round(v * 100)}</span><i style="height:${v == null ? 0 : Math.max(2, Math.round(v * 120))}px"></i></div>`).join('')}</div>
-          <div class="collabels">${MONTH_INI.map((x) => `<span>${x}</span>`).join('')}</div>
+          <div class="cols" style="${colStyle}">${b.byMonth.map((x) => `<div><span>${x.rate == null ? '' : Math.round(x.rate * 100) + (n === 12 ? '' : ' %')}</span><i style="height:${x.rate == null ? 0 : Math.max(2, Math.round(x.rate * 120))}px"></i></div>`).join('')}</div>
+          <div class="collabels" style="${colStyle}">${b.byMonth.map((x) => `<span>${lab(x)}</span>`).join('')}</div>
         </section>
         <section class="card"><h3 style="margin-bottom:4px">Répartition des membres</h3>
           <dl class="dl"><div><dt>Réguliers (80 % et plus)</dt><dd>${dist.reg}</dd></div><div><dt>Occasionnels (50 à 79 %)</dt><dd>${dist.occ}</dd></div><div><dt>Décrochés (moins de 50 %)</dt><dd>${dist.dec}</dd></div></dl></section>
-        <section class="card"><h3 style="margin-bottom:4px">Par zone</h3><dl class="dl">${group('zone').map(([k, v]) => `<div><dt>${esc(k)} (${v.n})</dt><dd>${pct(v.D ? v.P / v.D : null)}</dd></div>`).join('') || '<div><dt>—</dt><dd></dd></div>'}</dl></section>
-        <section class="card"><h3 style="margin-bottom:4px">Par sexe</h3><dl class="dl">${group('sexe').map(([k, v]) => `<div><dt>${esc(k)} (${v.n})</dt><dd>${pct(v.D ? v.P / v.D : null)}</dd></div>`).join('') || '<div><dt>—</dt><dd></dd></div>'}</dl></section>`;
+        ${ui.bCulte === 'all' ? groupCard('Par culte', group((m) => m.culte ? CULTES[m.culte] : '')) : ''}
+        ${groupCard('Par zone', group((m) => m.zone))}
+        ${groupCard('Par sexe', group((m) => m.sexe))}`;
     }
 
     const table = b.rows.slice().sort((x, y) => norm(x.m.nom + x.m.prenoms).localeCompare(norm(y.m.nom + y.m.prenoms)));
+    const sel = ui.bMode === 'month'
+      ? `<label for="bper">Mois</label><select id="bper">${months.map((x) => `<option value="${x}" ${x === ui.bMonth ? 'selected' : ''}>${cap(MONTHS[Number(x.slice(5)) - 1])} ${x.slice(0, 4)}</option>`).join('')}</select>`
+      : ui.bMode === 'quarter'
+        ? `<label for="bper">Trimestre</label><select id="bper">${quarters.map((x) => `<option value="${x}" ${x === ui.bQuarter ? 'selected' : ''}>${QNAMES[Number(x.slice(-1)) - 1]} ${x.slice(0, 4)}</option>`).join('')}</select>`
+        : `<label for="bper">Année</label><select id="bper">${years.map((x) => `<option ${x === ui.bYear ? 'selected' : ''}>${x}</option>`).join('')}</select>`;
     $app.innerHTML = `
       <header class="head light">
         <div class="row between">${KICKER}<a class="iconbtn noprint" href="#/reglages" aria-label="Réglages">${ICON.gear}</a></div>
         <h1>Bilans de participation</h1>
         <div class="tabs noprint" role="group" aria-label="Période du bilan" style="margin-top:8px">
           <button type="button" data-act="bmode" data-k="month" aria-pressed="${ui.bMode === 'month'}">Mensuel</button>
+          <button type="button" data-act="bmode" data-k="quarter" aria-pressed="${ui.bMode === 'quarter'}">Trimestriel</button>
           <button type="button" data-act="bmode" data-k="year" aria-pressed="${ui.bMode === 'year'}">Annuel</button>
         </div>
-        <div class="noprint" style="margin-top:8px">${ui.bMode === 'month'
-          ? `<label for="bper">Mois</label><select id="bper">${months.map((x) => `<option value="${x}" ${x === ui.bMonth ? 'selected' : ''}>${cap(MONTHS[Number(x.slice(5)) - 1])} ${x.slice(0, 4)}</option>`).join('')}</select>`
-          : `<label for="bper">Année</label><select id="bper">${years.map((x) => `<option ${x === ui.bYear ? 'selected' : ''}>${x}</option>`).join('')}</select>`}</div>
+        <div class="seg noprint" role="group" aria-label="Culte" style="margin-top:8px">
+          <button type="button" data-act="bculte" data-k="all" aria-pressed="${ui.bCulte === 'all'}">Tous</button>
+          <button type="button" data-act="bculte" data-k="fr" aria-pressed="${ui.bCulte === 'fr'}">Français</button>
+          <button type="button" data-act="bculte" data-k="jm" aria-pressed="${ui.bCulte === 'jm'}">Jula Moré</button>
+        </div>
+        <div class="noprint" style="margin-top:8px">${sel}</div>
       </header>
       <div class="wrap">
-        <h2 style="font-size:20px">${esc(title)}</h2>
+        <div><h2 style="font-size:20px">${esc(b.per.title)}</h2><div class="small muted">${esc(culteTitle)}</div></div>
         <div class="grid2">
           <div class="tile"><b>${b.list.length}</b><span>cultes comptés</span></div>
           <div class="tile"><b>${pct(b.rate)}</b><span>taux de participation</span></div>
@@ -720,20 +788,24 @@
       </div>
       <div class="foot"><button type="button" class="btn dark" style="flex:1" data-act="pdf">Exporter en PDF</button>
         <button type="button" class="btn ghost" style="flex:1;border-color:var(--ink);color:var(--ink)" data-act="csv">Exporter en Excel</button></div>`;
-    document.getElementById('bper').addEventListener('change', (e) => { if (ui.bMode === 'month') ui.bMonth = e.target.value; else ui.bYear = e.target.value; render(); });
+    document.getElementById('bper').addEventListener('change', (e) => {
+      if (ui.bMode === 'month') ui.bMonth = e.target.value; else if (ui.bMode === 'quarter') ui.bQuarter = e.target.value; else ui.bYear = e.target.value;
+      render();
+    });
   }
 
   function exportCsv() {
     const b = computeBilan();
-    const label = ui.bMode === 'month' ? ui.bMonth : ui.bYear;
-    const rows = [['Bilan de participation aux cultes — TCO', label], [],
-      ['Nom', 'Prénoms', 'Sexe', 'Zone', 'Statut', "Baptisé(e) d'eau", 'Présences', 'Absences', 'Excusé', 'Cultes comptés', 'Taux (%)']];
+    const culte = ui.bCulte === 'all' ? 'Tous les cultes' : CULTES[ui.bCulte];
+    const rows = [['Bilan de participation aux cultes — TCO', b.per.title, culte], [],
+      ['Nom', 'Prénoms', 'Culte', 'Sexe', 'Zone', 'Statut', "Baptisé(e) d'eau", 'Présences', 'Absences', 'Excusé', 'Cultes comptés', 'Taux (%)']];
     for (const r of b.rows.sort((x, y) => norm(x.m.nom + x.m.prenoms).localeCompare(norm(y.m.nom + y.m.prenoms)))) {
-      rows.push([r.m.nom, r.m.prenoms, r.m.sexe, r.m.zone, r.m.statut, r.m.baptise, r.st.P, r.st.A, r.st.E, r.st.denom, r.st.rate == null ? '' : Math.round(r.st.rate * 100)]);
+      rows.push([r.m.nom, r.m.prenoms, r.m.culte ? CULTE_SHORT[r.m.culte] : 'À préciser', r.m.sexe, r.m.zone, r.m.statut, r.m.baptise, r.st.P, r.st.A, r.st.E, r.st.denom, r.st.rate == null ? '' : Math.round(r.st.rate * 100)]);
     }
     rows.push([], ['Culte', 'Date', 'Présents']);
-    for (const x of b.perService) rows.push([x.s.label || TYPES[x.s.type], x.s.date, x.n]);
-    saveText(`bilan-presences-${label}.csv`, 'text/csv', toCsv(rows));
+    for (const x of b.perService) rows.push([svcName(x.s), x.s.date, x.n]);
+    const suffix = ui.bCulte === 'all' ? '' : '-' + (ui.bCulte === 'fr' ? 'francais' : 'jula-more');
+    saveText(`bilan-presences-${b.per.key}${suffix}.csv`, 'text/csv', toCsv(rows));
   }
 
   /* ================= RÉGLAGES ================= */
@@ -756,7 +828,7 @@
           <label class="btn ghost" style="margin:0">Restaurer une sauvegarde<input type="file" accept="application/json,.json" id="restore" hidden></label>
           <div id="rerr" class="err" role="alert"></div>
         </section>
-        <p class="small muted" style="text-align:center">TCO Présences · version 1.5</p>
+        <p class="small muted" style="text-align:center">TCO Présences · version 1.6</p>
       </div>`;
     document.getElementById('sform').addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -818,6 +890,8 @@
       case 'edit-cancel': ui.editing = null; render(); break;
       case 'kind': ui.kind = el.dataset.k; el.parentElement.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', b === el)); break;
       case 'bmode': ui.bMode = el.dataset.k; render(); break;
+      case 'bculte': ui.bCulte = el.dataset.k; render(); break;
+      case 'mculte': ui.mCulte = el.dataset.k; drawMembres(); break;
       case 'csv': exportCsv(); break;
       case 'pdf': printPage('Bilan TCO'); break;
       case 'backup': saveText(`sauvegarde-tco-presences-${today()}.json`, 'application/json', JSON.stringify(DB.dump())); break;
