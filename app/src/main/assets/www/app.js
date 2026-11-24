@@ -22,7 +22,7 @@
   const fullName = (m) => `${m.prenoms} ${m.nom}`.trim();
   const initials = (m) => ((m.prenoms || ' ')[0] + (m.nom || ' ')[0]).toUpperCase().trim();
   const TYPES = { dimanche: 'Culte du dimanche', semaine: 'Culte de semaine', special: 'Culte spécial' };
-  // Deux assemblées le dimanche (français puis Jula Moré) et des cultes communs (Noël, journées AEC, JADE…)
+  // Deux assemblées le dimanche (français puis Jula Moré) et des cultes communs (Noël, journées ASC, JAD…)
   const CULTES = { fr: 'Culte en français', jm: 'Culte Jula Moré', commun: 'Culte commun' };
   const CULTE_SHORT = { fr: 'Français', jm: 'Jula Moré' };
   const svcA = (s) => s.assemblee || 'commun';
@@ -375,7 +375,7 @@
     const typeBtns = document.querySelectorAll('#stype button');
     let kind = defK, assemblee = defA;
     const HELP = { fr: 'Seuls les membres du culte en français apparaissent au pointage.', jm: 'Seuls les membres du culte Jula Moré apparaissent au pointage.',
-      commun: 'Tous les membres apparaissent : Noël, journée de l’AEC, journée de la JADE…',
+      commun: 'Tous les membres apparaissent : Noël, journée de l’ASC, journée de la JAD…',
       enseignement: 'Enseignement du mercredi soir : les membres des deux cultes sont réunis.',
       priere: 'Prière du vendredi soir : les membres des deux cultes sont réunis.' };
     const refresh = () => {
@@ -385,7 +385,7 @@
       document.getElementById('sculte').hidden = !isCulte;
       document.getElementById('scountedrow').hidden = !isCulte;
       document.getElementById('stypehelp').textContent = HELP[isCulte ? assemblee : kind];
-      document.getElementById('slabel').placeholder = !isCulte ? 'Ex. : thème de la soirée' : assemblee === 'commun' ? 'Ex. : Noël, journée de l’AEC, journée de la JADE' : 'Ex. : 1er culte';
+      document.getElementById('slabel').placeholder = !isCulte ? 'Ex. : thème de la soirée' : assemblee === 'commun' ? 'Ex. : Noël, journée de l’ASC, journée de la JAD' : 'Ex. : 1er culte';
     };
     kindBtns.forEach((b) => b.addEventListener('click', () => { kind = b.dataset.k; refresh(); }));
     typeBtns.forEach((b) => b.addEventListener('click', () => { assemblee = b.dataset.t; refresh(); }));
@@ -403,7 +403,7 @@
   }
 
   /* ================= JOURNÉES SPÉCIALES ================= */
-  // Activités sur plusieurs jours (ex. 3 jours de prière de la JADE) : chaque jour a ses heures et son pointage ; tous les membres sont réunis.
+  // Activités sur plusieurs jours (ex. 3 jours de prière de la JAD) : chaque jour a ses heures et son pointage ; tous les membres sont réunis.
   const EV_TYPES = { enseignement: 'Enseignement', priere: 'Prière', autre: 'Autre' };
   function events() { return (DB.setting('events', []) || []).slice().sort((a, b) => a.start.localeCompare(b.start)); }
   function dayService(ev, date) { return services().find((s) => s.eventId === ev.id && s.date === date) || null; }
@@ -420,8 +420,8 @@
       <div class="wrap">
         <form class="card" id="evForm" style="display:flex;flex-direction:column;gap:12px" novalidate>
           <h2>Programmer des journées</h2>
-          <p class="small muted" style="margin:0">Ex. : 3 jours d’enseignement ou de prière de la JADE. Les membres des deux cultes sont réunis.</p>
-          <div class="field"><label for="ev-name">Nom de l’activité <span class="req">*</span></label><input id="ev-name" type="text" placeholder="Ex. : 3 jours de prière de la JADE"></div>
+          <p class="small muted" style="margin:0">Ex. : 3 jours d’enseignement ou de prière de la JAD. Les membres des deux cultes sont réunis.</p>
+          <div class="field"><label for="ev-name">Nom de l’activité <span class="req">*</span></label><input id="ev-name" type="text" placeholder="Ex. : 3 jours de prière de la JAD"></div>
           <div class="field"><span class="lbl">Type</span><div class="seg" role="group" aria-label="Type d’activité" id="ev-type">
             <button type="button" data-t="enseignement" aria-pressed="false">Enseignement</button>
             <button type="button" data-t="priere" aria-pressed="true">Prière</button>
@@ -972,7 +972,7 @@
           <label class="btn ghost" style="margin:0">Restaurer une sauvegarde<input type="file" accept="application/json,.json" id="restore" hidden></label>
           <div id="rerr" class="err" role="alert"></div>
         </section>
-        <p class="small muted" style="text-align:center">TCO Présences · version 1.7</p>
+        <p class="small muted" style="text-align:center">TCO Présences · version 1.8</p>
       </div>`;
     document.getElementById('sform').addEventListener('submit', async (e) => {
       e.preventDefault();
