@@ -55,7 +55,14 @@ Le pointage à plusieurs téléphones en même temps demande un petit serveur de
 L'APK est signé avec une clé permanente. Elle est stockée chiffrée dans `signing/tco.jks.enc`, et son mot de passe se trouve dans le secret GitHub **TCO_KEYSTORE_PASSWORD** (*Settings › Secrets and variables › Actions*).
 Garder ce mot de passe en lieu sûr. Sans lui, les prochaines versions ne pourront plus s'installer par-dessus l'ancienne.
 
+## Mot de passe administrateur (déblocage)
+Il débloque un téléphone dont le **code d'accès** est oublié (écran de verrouillage › Code oublié ? › Déblocage par l'administrateur) et ouvre une **sauvegarde** dont le mot de passe est oublié (Réglages › Restaurer › Mot de passe oublié ?).
+- Il est enregistré dans le secret GitHub **TCO_ADMIN_PASSWORD**. Il n'est écrit nulle part dans le code.
+- Pour le changer : modifier le secret, relancer la compilation, puis installer la nouvelle version sur les téléphones. Les anciennes sauvegardes restent ouvrables avec le nouveau mot de passe.
+- Seules les sauvegardes faites à partir de la version 2.2 peuvent être ouvertes par l'administrateur.
+
 ## Historique
+- 2.2 : mot de passe administrateur pour débloquer un code d'accès ou une sauvegarde oubliés.
 - 2.1 (sécurité et fiabilité) :
   - avertissement si la même rencontre est ouverte deux fois le même jour ; pas de rencontre à une date future ;
   - restauration avec résumé et confirmation ; sauvegarde contrôlée avant restauration ;

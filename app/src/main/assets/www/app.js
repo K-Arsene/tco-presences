@@ -1311,16 +1311,67 @@
     const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(pw), 'PBKDF2', false, ['deriveKey']);
     return crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 200000, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
   }
+  // Clé publique de l'administrateur : chaque sauvegarde peut aussi être ouverte avec le mot de passe administrateur.
+  const ADMIN_PUB = 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsWX7TR1wSSiJyqEOAJ6deq4RpPFvpU8/QoS1Mkvbzzn+uqAUyWAZJKB1ukzFixXLSmCv3zLRek8s3xPYir61/x3zYRn2W+u7SSXkxIpy/1x6k9FRqU8+zB4xNDdQRfuOtpLkJHE0mUOt3ForLPnHB1bVZFEWBvLtMTdlvWVRYlPuHOHO81dBq3GeGu3o7gbnO4s6dGAipesdN+qSr38CkNYlSMMvWA5BTF1QyYxD+MgShLW/NAMVLmhnq8J8tIBBq9KB0eh+t/TaT7D1wY+GOKuSUma7eLZANEsE4D+ia4lgbpG+n6+qL5rk5pJFVz1E4fsOLHhs9iQiPNj2LZC0twIDAQAB';
+  const adminReady = () => !!(window.TCO_ADMIN && window.TCO_ADMIN.key);
   async function encryptBackup(obj, pw) {
-    const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12));
-    const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await deriveKey(pw, salt), new TextEncoder().encode(JSON.stringify(obj)));
-    return JSON.stringify({ app: 'tco-presences', enc: 'aes-gcm-pbkdf2-v1', exportedAt: obj.exportedAt, salt: b64enc(salt), iv: b64enc(iv), data: b64enc(ct) });
+    const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12)), kiv = crypto.getRandomValues(new Uint8Array(12));
+    const raw = crypto.getRandomValues(new Uint8Array(32));
+    const dk = await crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt']);
+    const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, dk, new TextEncoder().encode(JSON.stringify(obj)));
+    const pwKey = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: kiv }, await deriveKey(pw, salt), raw);
+    const pub = await crypto.subtle.importKey('spki', b64dec(ADMIN_PUB), { name: 'RSA-OAEP', hash: 'SHA-256' }, false, ['encrypt']);
+    const admKey = await crypto.subtle.encrypt({ name: 'RSA-OAEP' }, pub, raw);
+    return JSON.stringify({ app: 'tco-presences', enc: 'aes-gcm-pbkdf2-v2', exportedAt: obj.exportedAt, salt: b64enc(salt), kiv: b64enc(kiv), pwKey: b64enc(pwKey), admKey: b64enc(admKey), iv: b64enc(iv), data: b64enc(ct) });
+  }
+  async function openWithRaw(w, raw) {
+    const dk = await crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['decrypt']);
+    const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64dec(w.iv) }, dk, b64dec(w.data));
+    return JSON.parse(new TextDecoder().decode(pt));
   }
   async function decryptBackup(w, pw) {
     try {
+      if (w.enc === 'aes-gcm-pbkdf2-v2') {
+        const raw = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64dec(w.kiv) }, await deriveKey(pw, b64dec(w.salt)), b64dec(w.pwKey));
+        return await openWithRaw(w, raw);
+      }
       const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64dec(w.iv) }, await deriveKey(pw, b64dec(w.salt)), b64dec(w.data));
       return JSON.parse(new TextDecoder().decode(pt));
     } catch (e) { throw new Error('Mot de passe incorrect.'); }
+  }
+
+  /* ---------- Mot de passe administrateur ----------
+     Il débloque le code d'accès oublié et les sauvegardes dont le mot de passe est oublié.
+     L'application ne contient que la clé privée de l'administrateur chiffrée par ce mot de passe. */
+  function adminWait() {
+    const until = Number(DB.setting('adminWaitUntil', 0)) || 0;
+    if (Date.now() >= until) return '';
+    const sec = Math.ceil((until - Date.now()) / 1000);
+    return `Trop d’essais. Réessayez dans ${sec > 90 ? Math.ceil(sec / 60) + ' minutes' : sec + ' secondes'}.`;
+  }
+  // Renvoie la clé privée si le mot de passe est juste, sinon lève une erreur avec un message clair
+  async function adminKey(pw) {
+    if (!adminReady()) throw new Error('Le déblocage administrateur n’est pas activé dans cette version de l’application.');
+    const w = adminWait(); if (w) throw new Error(w);
+    const A = window.TCO_ADMIN;
+    try {
+      const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(pw), 'PBKDF2', false, ['deriveKey']);
+      const k = await crypto.subtle.deriveKey({ name: 'PBKDF2', salt: b64dec(A.salt), iterations: A.iter, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+      const der = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64dec(A.iv) }, k, b64dec(A.key));
+      await DB.setSetting('adminFails', 0); await DB.setSetting('adminWaitUntil', 0);
+      return await crypto.subtle.importKey('pkcs8', der, { name: 'RSA-OAEP', hash: 'SHA-256' }, false, ['decrypt']);
+    } catch (e) {
+      const fails = (Number(DB.setting('adminFails', 0)) || 0) + 1;
+      await DB.setSetting('adminFails', fails);
+      if (fails % 5 === 0) await DB.setSetting('adminWaitUntil', Date.now() + Math.min(3600, 30 * 2 ** (fails / 5 - 1)) * 1000);
+      throw new Error(fails % 5 === 0 ? 'Mot de passe administrateur incorrect. Trop d’essais : patientez avant de réessayer.' : 'Mot de passe administrateur incorrect.');
+    }
+  }
+  async function adminOpenBackup(w, pw) {
+    if (w.enc !== 'aes-gcm-pbkdf2-v2' || !w.admKey) throw new Error('Cette sauvegarde a été faite avant la version 2.2 : seul son propre mot de passe peut l’ouvrir.');
+    const priv = await adminKey(pw);
+    try { return await openWithRaw(w, await crypto.subtle.decrypt({ name: 'RSA-OAEP' }, priv, b64dec(w.admKey))); }
+    catch (e) { throw new Error('Cette sauvegarde ne peut pas être ouverte avec le mot de passe administrateur.'); }
   }
   // Contrôle d'une sauvegarde avant restauration : seules des données au bon format sont gardées
   function cleanBackup(d) {
@@ -1348,7 +1399,7 @@
               <div class="field"><label for="bk-pw">Mot de passe</label><input id="bk-pw" type="password" autocomplete="new-password"></div>
               <div class="field"><label for="bk-pw2">Confirmer</label><input id="bk-pw2" type="password" autocomplete="new-password"></div>
             </div>
-            <span class="small muted">Au moins 6 caractères. La sauvegarde est chiffrée : sans ce mot de passe, personne ne peut l’ouvrir, pas même vous. Notez-le.</span>
+            <span class="small muted">Au moins 6 caractères. La sauvegarde est chiffrée : il faut ce mot de passe pour l’ouvrir. Notez-le. En cas d’oubli, seul l’administrateur peut la débloquer.</span>
             <div id="bkerr" class="err" role="alert"></div>
             <button class="btn ghost" type="submit">Créer une sauvegarde protégée</button>
           </form>
@@ -1403,11 +1454,20 @@
         try { w = JSON.parse(txt); } catch (err) { rerr.textContent = "Ce fichier n'est pas une sauvegarde TCO Présences. Choisissez le fichier « sauvegarde-tco-presences-….json »."; return; }
         if (w && w.app === 'tco-presences' && w.enc) {
           rbox.innerHTML = `<div class="field"><label for="r-pw">Mot de passe de la sauvegarde</label><input id="r-pw" type="password" autocomplete="off"></div>
-            <button type="button" class="btn primary sm" id="r-open">Ouvrir la sauvegarde</button>`;
+            <button type="button" class="btn primary sm" id="r-open">Ouvrir la sauvegarde</button>
+            <button type="button" class="lock-link dark" id="r-forgot">Mot de passe oublié ? Ouvrir avec le mot de passe administrateur</button>
+            <div id="r-adm" class="r-adm" hidden>
+              <div class="field"><label for="r-apw">Mot de passe administrateur</label><input id="r-apw" type="password" autocomplete="off"></div>
+              <button type="button" class="btn ghost sm" id="r-aopen">Ouvrir avec le mot de passe administrateur</button></div>`;
           document.getElementById('r-pw').focus();
           document.getElementById('r-open').addEventListener('click', async () => {
             rerr.textContent = '';
             try { confirmRestore(cleanBackup(await decryptBackup(w, document.getElementById('r-pw').value))); } catch (err) { rerr.textContent = err.message; }
+          });
+          document.getElementById('r-forgot').addEventListener('click', () => { const b = document.getElementById('r-adm'); b.hidden = false; document.getElementById('r-apw').focus(); });
+          document.getElementById('r-aopen').addEventListener('click', async () => {
+            rerr.textContent = ''; toast('Vérification…');
+            try { confirmRestore(cleanBackup(await adminOpenBackup(w, document.getElementById('r-apw').value))); } catch (err) { rerr.textContent = err.message; }
           });
           return;
         }
@@ -1432,7 +1492,7 @@
         </form>
         ${pinCard()}
         ${backupCard()}
-        <p class="small muted" style="text-align:center">TCO Présences · version 2.1</p>
+        <p class="small muted" style="text-align:center">TCO Présences · version 2.2</p>
       </div>`;
     document.getElementById('sform').addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -1487,6 +1547,13 @@
         <input id="recCode" type="text" autocomplete="off" autocapitalize="characters" placeholder="XXXX-XXXX">
         <div id="recErr" class="lock-err" role="alert"></div>
         <button class="btn block lock-btn" type="submit">Désactiver le code</button>
+        <button type="button" class="lock-link" id="lockAdmin">Pas de code de secours ? Déblocage par l’administrateur</button>
+      </form>
+      <form id="admForm" class="lock-form" hidden novalidate>
+        <label for="admPw">Mot de passe administrateur</label>
+        <input id="admPw" type="password" autocomplete="off">
+        <div id="admErr" class="lock-err" role="alert"></div>
+        <button class="btn block lock-btn" type="submit">Débloquer</button>
       </form></div>`;
     const pin = document.getElementById('lockPin');
     setTimeout(() => pin.focus(), 60);
@@ -1514,6 +1581,14 @@
       const code = document.getElementById('recCode').value.toUpperCase().replace(/[^A-Z0-9]/g, '');
       if ((await sha(DB.setting('pinSalt', '') + 'R' + code)) !== DB.setting('recoveryHash', '')) { document.getElementById('recErr').textContent = 'Code de secours incorrect.'; return; }
       await clearPin(); unlock(after); toast('Code d’accès désactivé. Vous pouvez en créer un nouveau dans les Réglages.');
+    });
+    document.getElementById('lockAdmin').addEventListener('click', () => { document.getElementById('recForm').hidden = true; document.getElementById('admForm').hidden = false; document.getElementById('admPw').focus(); });
+    document.getElementById('admForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const er = document.getElementById('admErr'); er.textContent = 'Vérification…';
+      try { await adminKey(document.getElementById('admPw').value); }
+      catch (err) { er.textContent = err.message; document.getElementById('admPw').value = ''; return; }
+      await clearPin(); unlock(() => go('#/reglages')); toast('Débloqué par l’administrateur. Choisissez un nouveau code d’accès.');
     });
   }
   function unlock(after) {

@@ -205,3 +205,6 @@ body.locked #app,body.locked #tabbar,body.locked #toast{visibility:hidden}
   body{background:#fff}
   .card{break-inside:avoid}
 }
+.lock-link.dark{color:#0E5C61;font-size:14px;text-align:left;padding:0}
+.r-adm{display:flex;flex-direction:column;gap:10px}
+.r-adm[hidden],.lock-form[hidden]{display:none}
