@@ -112,9 +112,13 @@
   };
   // Cultes comptés : bilans des cultes, règle des 2 absences, fiche membre
   const countedClosed = () => services().filter((s) => s.closed && s.counted && svcKind(s) === 'culte');
+  // Règle des 2 absences : uniquement les cultes comptés du dimanche
+  const isSunday = (d) => new Date(d + 'T12:00:00').getDay() === 0;
+  const rappelCulte = (s) => !!s.counted && svcKind(s) === 'culte' && isSunday(s.date);
+  const rappelClosed = () => countedClosed().filter((s) => isSunday(s.date));
 
   function lastCountedStatus(m, beforeService) {
-    const list = countedClosed().filter((s) => eligible(m, s) && (!beforeService || svcKey(s) < svcKey(beforeService)));
+    const list = rappelClosed().filter((s) => eligible(m, s) && (!beforeService || svcKey(s) < svcKey(beforeService)));
     const s = list.pop();
     if (!s) return null;
     const p = presence(s.id, m.id);
@@ -292,7 +296,7 @@
       list.innerHTML = shown.map((m) => {
         const y = st(m);
         const c = culteAt(m, s.date);
-        const prev = s.counted && svcKind(s) === 'culte' ? lastCountedStatus(m, s) : null;
+        const prev = rappelCulte(s) ? lastCountedStatus(m, s) : null;
         const info = [svcA(s) === 'commun' && c ? esc(CULTE_SHORT[c]) : '', m.zone ? 'Zone ' + esc(m.zone) : '', !c ? '<span class="tag grey">culte à préciser</span>' : '', prev === 'A' ? '<span class="tag warn">absent au culte précédent</span>' : ''].filter(Boolean).join(' · ');
         const main = y === 'P'
           ? `<button type="button" class="btn primary sm" data-act="mark" data-id="${m.id}" aria-pressed="true" aria-label="Retirer ${esc(fullName(m))} des présents">${ICON.check}Présent</button>`
@@ -335,11 +339,11 @@
     const x = extras(s);
     ui.closeArmed = false; ui.q = ''; ui.filter = 'all';
     ui.lastClose = { serviceId: s.id, presents: members.filter((m) => st(m) === 'P').length, absents: members.filter((m) => st(m) === 'A').length,
-      excuses: members.filter((m) => st(m) === 'E').length, v: x.v, e: x.e, alerts: newAlerts, culte: svcKind(s) === 'culte' };
+      excuses: members.filter((m) => st(m) === 'E').length, v: x.v, e: x.e, alerts: newAlerts, culte: rappelCulte(s) };
     render();
   }
 
-  /* ---------- Rappels : 2 absences successives SANS excuse aux cultes comptés ---------- */
+  /* ---------- Rappels : 2 absences successives SANS excuse aux cultes comptés du dimanche ---------- */
   // Recalculé à chaque clôture, correction, modification ou suppression d'une rencontre :
   // les rappels devenus sans objet sont clos, et une série manquée (saisie de cultes passés) est détectée.
   async function refreshAlerts() {
@@ -350,11 +354,11 @@
       let note = '';
       if (!m || m.actif === false) note = 'Membre marqué comme parti';
       else if (a.serviceIds.some((id) => !DB.get('services', id))) note = 'Annulé : rencontre supprimée';
-      else if (a.serviceIds.some((id) => { const sv = DB.get('services', id); return !(sv.counted && svcKind(sv) === 'culte') || !eligible(m, sv); })) note = 'Annulé : culte non compté pour ce membre';
+      else if (a.serviceIds.some((id) => { const sv = DB.get('services', id); return !rappelCulte(sv) || !eligible(m, sv); })) note = 'Annulé : culte non compté pour ce membre';
       else if (a.serviceIds.some((id) => { const p = presence(id, a.memberId); return p && (p.status === 'P' || p.status === 'E'); })) note = 'Annulé : absence corrigée';
       if (note) await DB.put('alerts', Object.assign({}, a, { status: 'done', kind: 'Autre', note, doneAt: today() }));
     }
-    const counted = countedClosed();
+    const counted = rappelClosed();
     const open = new Set(openAlerts().map((a) => a.memberId));
     const all = DB.list('alerts');
     for (const m of activeMembers()) {
@@ -424,7 +428,7 @@
           <div class="field"><label for="slabel">Intitulé (facultatif)</label><input id="slabel" type="text"></div>
           <label class="row" id="scountedrow" style="color:var(--ink);font-size:15px;font-weight:600;margin:0;min-height:44px">
             <input id="scounted" type="checkbox" checked style="width:22px;height:22px">
-            Compter ce culte (bilans et règle des 2 absences)</label>
+            Compter ce culte (bilans, et règle des 2 absences s’il a lieu un dimanche)</label>
           <div id="serr" class="err" role="alert"></div>
           <button class="btn primary block" type="submit">Ouvrir le pointage</button>
         </form>
@@ -642,7 +646,7 @@
               <div class="field"><label for="rend">Heure de fin</label><input id="rend" type="time" value="${esc(s.timeEnd || '')}"></div></div>
             <div class="field"><label for="rlabel">Intitulé (facultatif)</label><input id="rlabel" type="text" value="${esc(s.label || '')}"></div>
             <label class="row" id="rcountedrow" ${k === 'culte' ? '' : 'hidden'} style="color:var(--ink);font-size:15px;font-weight:600;margin:0;min-height:44px">
-              <input id="rcounted" type="checkbox" ${s.counted ? 'checked' : ''} style="width:22px;height:22px">Compter ce culte (bilans et règle des 2 absences)</label>`}
+              <input id="rcounted" type="checkbox" ${s.counted ? 'checked' : ''} style="width:22px;height:22px">Compter ce culte (bilans, et règle des 2 absences s’il a lieu un dimanche)</label>`}
           <div class="grid2">
             <div class="field"><label for="rvis">Membres non enregistrés</label><input id="rvis" type="number" inputmode="numeric" min="0" value="${x.v}"></div>
             <div class="field"><label for="renf">Enfants</label><input id="renf" type="number" inputmode="numeric" min="0" value="${x.e}"></div>
@@ -969,7 +973,7 @@
       <header class="head light">
         ${KICKER}
         <h1>Rappels d'absence</h1>
-        <p class="sub muted" style="margin:0">Membres absents à 2 cultes comptés successifs.</p>
+        <p class="sub muted" style="margin:0">Membres absents sans excuse à 2 cultes du dimanche successifs.</p>
         <div class="tabs" role="group" aria-label="Choisir la liste" style="margin-top:10px">
           <button type="button" data-act="rtab" data-k="open" aria-pressed="${ui.rTab === 'open'}">À traiter (${todo.length})</button>
           <button type="button" data-act="rtab" data-k="done" aria-pressed="${ui.rTab === 'done'}">Traités (${done.length})</button>
@@ -1492,7 +1496,7 @@
         </form>
         ${pinCard()}
         ${backupCard()}
-        <p class="small muted" style="text-align:center">TCO Présences · version 2.2</p>
+        <p class="small muted" style="text-align:center">TCO Présences · version 2.3</p>
       </div>`;
     document.getElementById('sform').addEventListener('submit', async (e) => {
       e.preventDefault();

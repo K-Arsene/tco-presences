@@ -39,6 +39,7 @@ Configuration requise : Android 7.0 ou plus récent.
 
 Règles appliquées :
 - Seuls les cultes **comptés** entrent dans les bilans et la règle des 2 absences. Les cultes du dimanche sont comptés par défaut, et la case peut être changée à l'ouverture de chaque culte.
+- La règle des 2 absences ne concerne que les **cultes du dimanche** (français, Jula Moré ou commun). Les enseignements, prières, journées spéciales et cultes tenus un autre jour (Noël en semaine, par exemple) restent dans les bilans mais ne déclenchent pas de rappel.
 - Une absence **excusée** compte comme absence dans les statistiques. Elle ne déclenche pas de rappel : il faut 2 absences successives sans excuse.
 - Un membre n'est compté qu'à partir de sa date d'arrivée à l'église. Le jour même ne compte que s'il a été pointé.
 - Taux de participation = présences ÷ rencontres concernant le membre (depuis son arrivée, hors périodes où il était parti).
@@ -62,6 +63,7 @@ Il débloque un téléphone dont le **code d'accès** est oublié (écran de ver
 - Seules les sauvegardes faites à partir de la version 2.2 peuvent être ouvertes par l'administrateur.
 
 ## Historique
+- 2.3 : la règle des 2 absences ne porte que sur les cultes du dimanche.
 - 2.2 : mot de passe administrateur pour débloquer un code d'accès ou une sauvegarde oubliés.
 - 2.1 (sécurité et fiabilité) :
   - avertissement si la même rencontre est ouverte deux fois le même jour ; pas de rencontre à une date future ;
